@@ -19,6 +19,8 @@ it at any executable.
 - Register a logon task for auto-start (runs in your desktop session, GUI visible).
 - File logging and an append-only JSONL crash history.
 - Hot config reload — edit the TOML without restarting guardian.
+- Optional native system-tray mode (`--tray`), no extra dependencies.
+- `--history` command to summarize recorded crashes.
 - Ctrl+C / console-close gracefully terminates children.
 
 中文说明见下方 [中文文档](#中文文档)。
@@ -93,11 +95,29 @@ guardian.exe --uninstall-task
 ```
 
 This uses `schtasks /SC ONLOGON`, so guardian runs in your **interactive desktop
-session** — any GUI app it launches has a visible window. It stores the absolute
-path of the config at install time; re-run `--install-task` if you move the file.
+session** — any GUI app it launches has a visible window. The task starts guardian
+in `--tray` mode, so no console window appears. It stores the absolute path of the
+config at install time; re-run `--install-task` if you move the file.
 
 A Windows Service is intentionally **not** used: services run in Session 0 and
 GUI apps started there have no visible window on your desktop.
+
+## System tray mode
+
+By default guardian runs as a console app. Add `--tray` to run it as a tray program:
+
+```powershell
+guardian.exe --tray guardian.toml
+```
+
+No console window; an icon appears in the system tray. Right-click it for:
+
+- **Status** — shows the config path and whether autostart is on.
+- **Toggle autostart** — install/remove the logon task without a command prompt.
+- **Exit** — stops guardian and terminates the processes it owns.
+
+The tray icon is built with native Win32 APIs — no GUI framework or extra
+dependency, so the binary stays small. Logging still goes to `guardian.log`.
 
 ## Logs and crash history
 
@@ -113,6 +133,13 @@ Two files are written next to the config file:
 
 `uptime_secs` is how long the process lived; a healthy close has a large value,
 a fast crash has a small one.
+
+Summarize the history without opening the file:
+
+```powershell
+guardian.exe --history guardian.toml
+# prints record count, per-process counts, and the last 10 exits
+```
 
 ## Hot config reload
 
@@ -178,6 +205,8 @@ MIT — see [LICENSE](LICENSE).
 - 可注册登录自启计划任务（运行在桌面会话，GUI 窗口可见）。
 - 日志落盘 + 追加式 JSONL 崩溃历史。
 - 配置热重载——改 TOML 不用重启。
+- 可选原生系统托盘模式（`--tray`），无额外依赖。
+- `--history` 命令汇总历史崩溃。
 - Ctrl+C / 关闭控制台时优雅终止子进程。
 
 ### 快速开始
@@ -247,11 +276,29 @@ guardian.exe --uninstall-task
 ```
 
 它使用 `schtasks /SC ONLOGON`，因此 guardian 运行在**交互式桌面会话**，
-它启动的 GUI 程序窗口可见。安装时记录的是配置的绝对路径，移动文件后需重新
-执行 `--install-task`。
+它启动的 GUI 程序窗口可见。计划任务以 `--tray` 模式启动 guardian，所以不会
+弹出控制台窗口。安装时记录的是配置的绝对路径，移动文件后需重新执行
+`--install-task`。
 
 故意不做成 Windows 服务：服务运行在 Session 0，在那里启动的 GUI 程序在桌面
 上看不到窗口。
+
+### 系统托盘模式
+
+默认 guardian 是控制台程序。加 `--tray` 即以托盘程序方式运行：
+
+```powershell
+guardian.exe --tray guardian.toml
+```
+
+无控制台窗口，托盘出现图标。右键菜单：
+
+- **Status** —— 显示配置路径和自启是否开启。
+- **Toggle autostart** —— 无需命令行即可安装/卸载登录任务。
+- **Exit** —— 停止 guardian 并终止它持有的进程。
+
+托盘图标用原生 Win32 API 实现，无 GUI 框架或额外依赖，二进制保持小巧。
+日志照常写入 `guardian.log`。
 
 ### 日志与崩溃历史
 
@@ -266,6 +313,13 @@ guardian.exe --uninstall-task
 ```
 
 `uptime_secs` 是进程存活时长：正常关闭是大值，快速崩溃是小值。
+
+不用打开文件即可汇总历史：
+
+```powershell
+guardian.exe --history guardian.toml
+# 输出记录总数、各进程次数、最近 10 次退出
+```
 
 ### 配置热重载
 

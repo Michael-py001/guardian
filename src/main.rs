@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL_MS: u64 = 250;
@@ -15,8 +15,24 @@ const TASK_NAME: &str = "Guardian";
 const CONFIG_RELOAD_INTERVAL_MS: u64 = 1_000;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static QUIET_CONSOLE: AtomicBool = AtomicBool::new(false);
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 static CRASH_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+static TRAY_CONFIG_PATH: Mutex<Option<String>> = Mutex::new(None);
+static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
+
+#[cfg(windows)]
+const WM_APP_TRAY: u32 = 0x8000 + 1;
+#[cfg(windows)]
+const WM_QUIT: u32 = 0x0012;
+#[cfg(windows)]
+const WM_DESTROY: u32 = 0x0002;
+#[cfg(windows)]
+const WM_COMMAND: u32 = 0x0111;
+#[cfg(windows)]
+const WM_RBUTTONUP: u32 = 0x0205;
+#[cfg(windows)]
+const WM_LBUTTONDBLCLK: u32 = 0x0203;
 
 #[cfg(windows)]
 mod win {
@@ -25,6 +41,11 @@ mod win {
     pub const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
     pub const WAIT_OBJECT_0: u32 = 0;
     pub const INVALID_HANDLE_VALUE: isize = -1;
+    pub const NIF_MESSAGE: u32 = 0x1;
+    pub const NIF_ICON: u32 = 0x2;
+    pub const NIF_TIP: u32 = 0x4;
+    pub const NIM_ADD: u32 = 0;
+    pub const NIM_DELETE: u32 = 2;
 
     #[repr(C)]
     pub struct ProcessEntry32W {
@@ -40,6 +61,67 @@ mod win {
         pub sz_exe_file: [u16; 260],
     }
 
+    #[repr(C)]
+    pub struct Point {
+        pub x: i32,
+        pub y: i32,
+    }
+
+    #[repr(C)]
+    pub struct Msg {
+        pub hwnd: isize,
+        pub message: u32,
+        pub w_param: usize,
+        pub l_param: isize,
+        pub time: u32,
+        pub pt: Point,
+    }
+
+    #[repr(C)]
+    pub struct Guid {
+        pub data1: u32,
+        pub data2: u16,
+        pub data3: u16,
+        pub data4: [u8; 8],
+    }
+
+    #[repr(C)]
+    pub struct NotifyIconDataW {
+        pub cb_size: u32,
+        pub hwnd: isize,
+        pub u_id: u32,
+        pub u_flags: u32,
+        pub u_callback_message: u32,
+        pub h_icon: isize,
+        pub sz_tip: [u16; 128],
+        pub dw_state: u32,
+        pub dw_state_mask: u32,
+        pub sz_info: [u16; 256],
+        pub u_timeout_or_version: u32,
+        pub sz_info_title: [u16; 64],
+        pub dw_info_flags: u32,
+        pub guid_item: Guid,
+        pub h_balloon_icon: isize,
+    }
+
+    pub type WndProc = unsafe extern "system" fn(isize, u32, usize, isize) -> isize;
+
+    #[repr(C)]
+    pub struct WndClassW {
+        pub style: u32,
+        pub lpfn_wnd_proc: Option<WndProc>,
+        pub cb_cls_extra: i32,
+        pub cb_wnd_extra: i32,
+        pub h_instance: isize,
+        pub h_icon: isize,
+        pub h_cursor: isize,
+        pub hbr_background: isize,
+        pub lpsz_menu_name: *const u16,
+        pub lpsz_class_name: *const u16,
+    }
+
+    #[link(name = "user32")]
+    #[link(name = "shell32")]
     unsafe extern "system" {
         pub fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> isize;
         pub fn Process32FirstW(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
@@ -56,6 +138,46 @@ mod win {
             handler: Option<unsafe extern "system" fn(u32) -> i32>,
             add: i32,
         ) -> i32;
+        pub fn FreeConsole() -> i32;
+        pub fn RegisterClassW(lp_wnd_class: *const WndClassW) -> u16;
+        pub fn CreateWindowExW(
+            dw_ex_style: u32,
+            lp_class_name: *const u16,
+            lp_window_name: *const u16,
+            dw_style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            hwnd_parent: isize,
+            h_menu: isize,
+            h_instance: isize,
+            lp_param: *const std::ffi::c_void,
+        ) -> isize;
+        pub fn DestroyWindow(h_wnd: isize) -> i32;
+        pub fn GetMessageW(lp_msg: *mut Msg, h_wnd: isize, msg_filter_min: u32, msg_filter_max: u32) -> i32;
+        pub fn TranslateMessage(lp_msg: *const Msg) -> i32;
+        pub fn DispatchMessageW(lp_msg: *const Msg) -> isize;
+        pub fn DefWindowProcW(h_wnd: isize, msg: u32, w_param: usize, l_param: isize) -> isize;
+        pub fn PostMessageW(h_wnd: isize, msg: u32, w_param: usize, l_param: isize) -> i32;
+        pub fn PostQuitMessage(exit_code: i32);
+        pub fn LoadIconW(h_instance: isize, lp_icon_name: *const u16) -> isize;
+        pub fn Shell_NotifyIconW(dw_message: u32, lp_data: *mut NotifyIconDataW) -> i32;
+        pub fn CreatePopupMenu() -> isize;
+        pub fn AppendMenuW(h_menu: isize, u_flags: u32, u_id_new_item: usize, lp_new_item: *const u16) -> i32;
+        pub fn DestroyMenu(h_menu: isize) -> i32;
+        pub fn GetCursorPos(lp_point: *mut Point) -> i32;
+        pub fn SetForegroundWindow(h_wnd: isize) -> i32;
+        pub fn TrackPopupMenu(
+            h_menu: isize,
+            u_flags: u32,
+            x: i32,
+            y: i32,
+            n_reserved: i32,
+            h_wnd: isize,
+            lp_rect: *const std::ffi::c_void,
+        ) -> i32;
+        pub fn MessageBoxW(h_wnd: isize, lp_text: *const u16, lp_caption: *const u16, u_type: u32) -> i32;
     }
 }
 
@@ -80,8 +202,10 @@ fn install_ctrl_handler() -> Result<()> {
 
 fn log(msg: &str) {
     let line = format!("[{}] {}\n", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
-    print!("{}", line);
-    let _ = std::io::stdout().flush();
+    if !QUIET_CONSOLE.load(Ordering::SeqCst) {
+        print!("{}", line);
+        let _ = std::io::stdout().flush();
+    }
     if let Ok(mut guard) = LOG_FILE.lock()
         && let Some(f) = guard.as_mut()
     {
@@ -457,25 +581,30 @@ fn schedule_restart(rt: &mut Runtime, advance_backoff: bool) {
 
 #[derive(Debug)]
 enum Action {
-    Run { config_path: String },
+    Run { config_path: String, tray: bool },
+    History { config_path: String },
     InstallTask { config_path: String },
     UninstallTask,
 }
 
 fn parse_action() -> Action {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("--install-task") => Action::InstallTask {
-            config_path: args.next().unwrap_or_else(|| "guardian.toml".to_string()),
-        },
-        Some("--uninstall-task") => Action::UninstallTask,
-        Some(path) => Action::Run {
-            config_path: path.to_string(),
-        },
-        None => Action::Run {
-            config_path: "guardian.toml".to_string(),
-        },
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let config_path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| "guardian.toml".to_string());
+    if args.iter().any(|a| a == "--install-task") {
+        return Action::InstallTask { config_path };
     }
+    if args.iter().any(|a| a == "--uninstall-task") {
+        return Action::UninstallTask;
+    }
+    if args.iter().any(|a| a == "--history") {
+        return Action::History { config_path };
+    }
+    let tray = args.iter().any(|a| a == "--tray");
+    Action::Run { config_path, tray }
 }
 
 fn load_config(config_path: &str) -> Result<Config> {
@@ -492,6 +621,64 @@ fn load_config(config_path: &str) -> Result<Config> {
     Ok(config)
 }
 
+fn config_dir(config_path: &str) -> PathBuf {
+    Path::new(config_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn crash_history_path(config_path: &str) -> PathBuf {
+    config_dir(config_path).join("crash-history.jsonl")
+}
+
+/// Print a summary of the crash history next to the given config.
+fn show_history(config_path: &str) -> Result<()> {
+    let path = crash_history_path(config_path);
+    let content = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "no crash history at '{}' (guardian has not recorded any exits yet)",
+            path.display()
+        )
+    })?;
+    let entries: Vec<CrashEntry> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    println!("Crash history: {} ({} records)", path.display(), entries.len());
+
+    let mut by_process: HashMap<&str, usize> = HashMap::new();
+    for e in &entries {
+        *by_process.entry(&e.process).or_insert(0) += 1;
+    }
+    let mut names: Vec<_> = by_process.iter().collect();
+    names.sort_by(|a, b| b.1.cmp(a.1));
+    println!("\nBy process:");
+    for (name, count) in names {
+        println!("  {:20} {}", name, count);
+    }
+
+    println!("\nLast 10 exits:");
+    for e in entries.iter().rev().take(10) {
+        println!(
+            "  {}  {:16} pid={:<8} exit={:<8} uptime={}s restart#{}",
+            e.time, e.process, e.pid, e.exit_code, e.uptime_secs, e.restart_number
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn query_task() -> bool {
+    Command::new("schtasks.exe")
+        .args(["/Query", "/TN", TASK_NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[cfg(windows)]
 fn install_task(config_path: &str) -> Result<()> {
     if !Path::new(config_path).exists() {
@@ -499,7 +686,8 @@ fn install_task(config_path: &str) -> Result<()> {
     }
     let exe = std::env::current_exe().context("failed to locate guardian.exe")?;
     let cfg_abs = std::path::absolute(config_path).context("failed to resolve config path")?;
-    let task_run = format!("\"{}\" \"{}\"", exe.display(), cfg_abs.display());
+    // Autostart launches guardian in tray mode so no console window appears.
+    let task_run = format!("\"{}\" --tray \"{}\"", exe.display(), cfg_abs.display());
     let status = Command::new("schtasks.exe")
         .args(["/Create", "/TN", TASK_NAME, "/TR", &task_run, "/SC", "ONLOGON", "/F"])
         .status()
@@ -534,6 +722,179 @@ fn uninstall_task() -> Result<()> {
     bail!("scheduled tasks are only supported on Windows")
 }
 
+// ---------------- tray UI (native Win32, no extra dependencies) ----------------
+
+#[cfg(windows)]
+fn message_box(text: &str) {
+    let body: Vec<u16> = format!("{}\0", text).encode_utf16().collect();
+    let caption: Vec<u16> = "Guardian\0".encode_utf16().collect();
+    unsafe {
+        win::MessageBoxW(0, body.as_ptr(), caption.as_ptr(), 0);
+    }
+}
+
+#[cfg(windows)]
+fn show_tray_status() {
+    let cfg = TRAY_CONFIG_PATH
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "guardian.toml".to_string());
+    let autostart = if query_task() { "on" } else { "off" };
+    message_box(&format!(
+        "Guardian is running.\nConfig: {}\nAutostart: {}\nSee guardian.log for details.",
+        cfg, autostart
+    ));
+}
+
+#[cfg(windows)]
+fn toggle_autostart() {
+    let cfg = TRAY_CONFIG_PATH
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "guardian.toml".to_string());
+    let was_on = query_task();
+    let result = if was_on {
+        uninstall_task()
+    } else {
+        install_task(&cfg)
+    };
+    match result {
+        Ok(()) => {
+            let now_on = query_task();
+            message_box(&format!(
+                "Autostart is now {}.",
+                if now_on { "on" } else { "off" }
+            ));
+        }
+        Err(e) => message_box(&format!("Failed to change autostart: {}", e)),
+    }
+}
+
+#[cfg(windows)]
+fn show_tray_menu(hwnd: isize) {
+    unsafe {
+        let menu = win::CreatePopupMenu();
+        if menu == 0 {
+            return;
+        }
+        for (text, id) in [("Status", 1usize), ("Toggle autostart", 2), ("Exit", 3)] {
+            let wide: Vec<u16> = format!("{}\0", text).encode_utf16().collect();
+            win::AppendMenuW(menu, 0, id, wide.as_ptr());
+        }
+        let mut pt = win::Point { x: 0, y: 0 };
+        win::GetCursorPos(&mut pt);
+        win::SetForegroundWindow(hwnd);
+        win::TrackPopupMenu(menu, 2, pt.x, pt.y, 0, hwnd, std::ptr::null());
+        win::DestroyMenu(menu);
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn tray_wnd_proc(
+    hwnd: isize,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    unsafe {
+        match msg {
+            WM_APP_TRAY => {
+                match (lparam & 0xffff) as u32 {
+                    WM_RBUTTONUP | WM_LBUTTONDBLCLK => show_tray_menu(hwnd),
+                    _ => {}
+                }
+                0
+            }
+            WM_COMMAND => {
+                match (wparam & 0xffff) as u32 {
+                    1 => show_tray_status(),
+                    2 => toggle_autostart(),
+                    3 => {
+                        SHUTDOWN.store(true, Ordering::SeqCst);
+                        win::PostMessageW(hwnd, WM_QUIT, 0, 0);
+                    }
+                    _ => {}
+                }
+                0
+            }
+            WM_DESTROY => {
+                win::PostQuitMessage(0);
+                0
+            }
+            _ => win::DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn tray_message_loop() -> Result<()> {
+    unsafe {
+        let class_name: Vec<u16> = "GuardianTrayClass\0".encode_utf16().collect();
+        let wc = win::WndClassW {
+            style: 0,
+            lpfn_wnd_proc: Some(tray_wnd_proc),
+            cb_cls_extra: 0,
+            cb_wnd_extra: 0,
+            h_instance: 0,
+            h_icon: 0,
+            h_cursor: 0,
+            hbr_background: 0,
+            lpsz_menu_name: std::ptr::null(),
+            lpsz_class_name: class_name.as_ptr(),
+        };
+        if win::RegisterClassW(&wc) == 0 {
+            bail!("RegisterClassW failed");
+        }
+        let hwnd = win::CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null(),
+        );
+        if hwnd == 0 {
+            bail!("CreateWindowExW failed");
+        }
+        TRAY_HWND.store(hwnd, Ordering::SeqCst);
+
+        let mut nid: win::NotifyIconDataW = std::mem::zeroed();
+        nid.cb_size = std::mem::size_of::<win::NotifyIconDataW>() as u32;
+        nid.hwnd = hwnd;
+        nid.u_id = 1;
+        nid.u_flags = win::NIF_MESSAGE | win::NIF_ICON | win::NIF_TIP;
+        nid.u_callback_message = WM_APP_TRAY;
+        nid.h_icon = win::LoadIconW(0, 32512usize as *const u16); // IDI_APPLICATION
+        let tip: Vec<u16> = "Guardian\0".encode_utf16().collect();
+        nid.sz_tip[..tip.len()].copy_from_slice(&tip);
+        if win::Shell_NotifyIconW(win::NIM_ADD, &mut nid) == 0 {
+            bail!("Shell_NotifyIconW failed");
+        }
+        log("tray icon active (right-click for menu)");
+
+        let mut msg: win::Msg = std::mem::zeroed();
+        while win::GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            win::TranslateMessage(&msg);
+            win::DispatchMessageW(&msg);
+        }
+
+        win::Shell_NotifyIconW(win::NIM_DELETE, &mut nid);
+        win::DestroyWindow(hwnd);
+        TRAY_HWND.store(0, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+// ---------------- monitor loop ----------------
+
 /// Ordered diff of old vs new config by process name. Returns (to_remove, to_add, to_update).
 fn diff_config(
     old: &[Runtime],
@@ -556,7 +917,6 @@ fn diff_config(
         match old_names.get(p.name.as_str()) {
             None => to_add.push(p.clone()),
             Some(r) => {
-                // Config changed if any tuning field differs (comparison by TOML value).
                 let old_val = toml::to_string(&r.cfg).unwrap_or_default();
                 let new_val = toml::to_string(p).unwrap_or_default();
                 if old_val != new_val {
@@ -568,36 +928,7 @@ fn diff_config(
     (to_remove, to_add, to_update)
 }
 
-fn run(config_path: &str) -> Result<()> {
-    let config = load_config(config_path)?;
-
-    // Log + crash history paths live next to the config file.
-    let cfg_dir = Path::new(config_path)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let log_path = cfg_dir.join("guardian.log");
-    let crash_path = cfg_dir.join("crash-history.jsonl");
-    *LOG_FILE.lock().unwrap() = Some(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("failed to open log '{}'", log_path.display()))?,
-    );
-    *CRASH_FILE.lock().unwrap() = Some(crash_path.clone());
-
-    install_ctrl_handler()?;
-
-    let mut runtimes: Vec<Runtime> = config.process.iter().cloned().map(Runtime::new).collect();
-    log(&format!(
-        "guardian started, watching {} process(es). Ctrl+C to stop.",
-        runtimes.len()
-    ));
-    log(&format!("log: {}", log_path.display()));
-    log(&format!("crash history: {}", crash_path.display()));
-
+fn monitor_loop(mut runtimes: Vec<Runtime>, config_path: &str) {
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let mut last_config_check = Instant::now();
     let mut last_config_mtime = fs::metadata(config_path).and_then(|m| m.modified()).ok();
@@ -606,10 +937,10 @@ fn run(config_path: &str) -> Result<()> {
         // --- Hot reload: poll config mtime, apply changes in place ---
         if last_config_check.elapsed() >= Duration::from_millis(CONFIG_RELOAD_INTERVAL_MS) {
             last_config_check = Instant::now();
-            let mtime = fs::metadata(config_path).and_then(|m| m.modified()).ok();
+            let mtime = fs::metadata(&config_path).and_then(|m| m.modified()).ok();
             if mtime != last_config_mtime {
                 last_config_mtime = mtime;
-                match load_config(config_path) {
+                match load_config(&config_path) {
                     Ok(new_config) => {
                         let (to_remove, to_add, to_update) = diff_config(&runtimes, &new_config);
 
@@ -629,7 +960,6 @@ fn run(config_path: &str) -> Result<()> {
                                 rt.delay_ms = rt.cfg.restart_delay_ms;
                                 rt.restarts = 0;
                                 rt.stopped = false;
-                                // Terminate the old process so it restarts with new settings.
                                 if let Some(mut w) = rt.child.take() {
                                     w.terminate();
                                 }
@@ -681,12 +1011,85 @@ fn run(config_path: &str) -> Result<()> {
         }
     }
     log("guardian stopped.");
+
+    // In tray mode, wake the main thread's message loop so it can clean up.
+    #[cfg(windows)]
+    {
+        let hwnd = TRAY_HWND.load(Ordering::SeqCst);
+        if hwnd != 0 {
+            unsafe {
+                win::PostMessageW(hwnd, WM_QUIT, 0, 0);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = &TRAY_HWND;
+}
+
+fn run(config_path: &str, tray: bool) -> Result<()> {
+    let config = load_config(config_path)?;
+
+    // Capture the config path for hot reload (and for the tray menu).
+    *TRAY_CONFIG_PATH.lock().unwrap() = Some(config_path.to_string());
+
+    let cfg_dir = config_dir(config_path);
+    let log_path = cfg_dir.join("guardian.log");
+    let crash_path = crash_history_path(config_path);
+    *LOG_FILE.lock().unwrap() = Some(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("failed to open log '{}'", log_path.display()))?,
+    );
+    *CRASH_FILE.lock().unwrap() = Some(crash_path.clone());
+
+    install_ctrl_handler()?;
+
+    let runtimes: Vec<Runtime> = config.process.iter().cloned().map(Runtime::new).collect();
+    log(&format!(
+        "guardian started, watching {} process(es). Ctrl+C to stop.",
+        runtimes.len()
+    ));
+    log(&format!("log: {}", log_path.display()));
+    log(&format!("crash history: {}", crash_path.display()));
+
+    if tray {
+        #[cfg(windows)]
+        {
+            let owned_path = config_path.to_string();
+            let handle = std::thread::spawn(move || monitor_loop(runtimes, &owned_path));
+            let tray_result = tray_message_loop();
+            SHUTDOWN.store(true, Ordering::SeqCst);
+            let _ = handle.join();
+            tray_result?;
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            bail!("tray mode is only supported on Windows");
+        }
+    }
+
+    monitor_loop(runtimes, config_path);
     Ok(())
 }
 
 fn main() -> Result<()> {
     match parse_action() {
-        Action::Run { config_path } => run(&config_path),
+        Action::Run { config_path, tray } => {
+            if tray {
+                #[cfg(windows)]
+                {
+                    QUIET_CONSOLE.store(true, Ordering::SeqCst);
+                    unsafe {
+                        win::FreeConsole();
+                    }
+                }
+            }
+            run(&config_path, tray)
+        }
+        Action::History { config_path } => show_history(&config_path),
         Action::InstallTask { config_path } => install_task(&config_path),
         Action::UninstallTask => uninstall_task(),
     }
@@ -749,11 +1152,12 @@ mod tests {
     }
 
     #[test]
-    fn action_parsing() {
+    fn action_parsing_shape() {
         let a = Action::Run {
             config_path: "x.toml".to_string(),
+            tray: false,
         };
-        assert!(matches!(a, Action::Run { .. }));
+        assert!(matches!(a, Action::Run { tray: false, .. }));
         assert!(matches!(Action::UninstallTask, Action::UninstallTask));
     }
 
@@ -787,5 +1191,22 @@ mod tests {
         assert_eq!(add[0].name, "c");
         assert_eq!(update.len(), 1);
         assert_eq!(update[0].0, "a");
+    }
+
+    #[test]
+    fn crash_entry_json_roundtrip() {
+        let entry = CrashEntry {
+            time: "2026-11-23 14:24:42".to_string(),
+            process: "baocode".to_string(),
+            pid: 1234,
+            exit_code: "7".to_string(),
+            uptime_secs: 3,
+            restart_number: 1,
+        };
+        let line = serde_json::to_string(&entry).unwrap();
+        let back: CrashEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.process, "baocode");
+        assert_eq!(back.pid, 1234);
+        assert_eq!(back.restart_number, 1);
     }
 }
