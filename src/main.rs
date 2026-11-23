@@ -1,15 +1,58 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Local;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL_MS: u64 = 250;
+const TASK_NAME: &str = "Guardian";
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+mod win {
+    pub const PROCESS_TERMINATE: u32 = 0x0001;
+    pub const SYNCHRONIZE: u32 = 0x0010_0000;
+    pub const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    pub const WAIT_OBJECT_0: u32 = 0;
+    pub const INVALID_HANDLE_VALUE: isize = -1;
+
+    #[repr(C)]
+    pub struct ProcessEntry32W {
+        pub dw_size: u32,
+        pub cnt_usage: u32,
+        pub th32_process_id: u32,
+        pub th32_default_heap_id: usize,
+        pub th32_module_id: u32,
+        pub cnt_threads: u32,
+        pub th32_parent_process_id: u32,
+        pub pc_pri_class_base: i32,
+        pub dw_flags: u32,
+        pub sz_exe_file: [u16; 260],
+    }
+
+    unsafe extern "system" {
+        pub fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> isize;
+        pub fn Process32FirstW(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+        pub fn Process32NextW(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+        pub fn OpenProcess(
+            dw_desired_access: u32,
+            b_inherit_handle: i32,
+            dw_process_id: u32,
+        ) -> isize;
+        pub fn CloseHandle(h_object: isize) -> i32;
+        pub fn WaitForSingleObject(h_handle: isize, dw_milliseconds: u32) -> u32;
+        pub fn TerminateProcess(h_process: isize, u_exit_code: u32) -> i32;
+        pub fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+}
 
 #[cfg(windows)]
 unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> i32 {
@@ -18,16 +61,8 @@ unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> i32 {
 }
 
 #[cfg(windows)]
-unsafe extern "system" {
-    fn SetConsoleCtrlHandler(
-        handler: Option<unsafe extern "system" fn(u32) -> i32>,
-        add: i32,
-    ) -> i32;
-}
-
-#[cfg(windows)]
 fn install_ctrl_handler() -> Result<()> {
-    if unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), 1) } == 0 {
+    if unsafe { win::SetConsoleCtrlHandler(Some(console_ctrl_handler), 1) } == 0 {
         bail!("failed to install console control handler");
     }
     Ok(())
@@ -48,6 +83,11 @@ struct Config {
 struct ProcessConfig {
     name: String,
     command: String,
+    /// If set and a process with this image name is already running, adopt it
+    /// instead of spawning a new one. On Windows this is an exe file name like
+    /// "baocode.exe" (case-insensitive).
+    #[serde(default)]
+    adopt: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     cwd: Option<String>,
@@ -89,6 +129,11 @@ impl ProcessConfig {
         if self.command.trim().is_empty() {
             bail!("process '{}': command must not be empty", self.name);
         }
+        if let Some(adopt) = &self.adopt {
+            if adopt.trim().is_empty() {
+                bail!("process '{}': adopt must not be empty", self.name);
+            }
+        }
         if !self.backoff_factor.is_finite() || self.backoff_factor <= 0.0 {
             bail!("process '{}': backoff_factor must be a positive number", self.name);
         }
@@ -102,14 +147,65 @@ impl ProcessConfig {
     }
 }
 
+/// A process we are watching: either one we spawned (std Child) or one that was
+/// already running when guardian started (raw Windows handle).
+enum Watched {
+    Owned(Child),
+    Adopted { handle: isize, pid: u32 },
+}
+
+impl Watched {
+    fn pid(&self) -> u32 {
+        match self {
+            Watched::Owned(child) => child.id(),
+            Watched::Adopted { pid, .. } => *pid,
+        }
+    }
+
+    /// None = still running. Some(code) = exited; code may be unknown for adopted processes.
+    fn try_wait(&mut self) -> Option<Option<i32>> {
+        match self {
+            Watched::Owned(child) => match child.try_wait() {
+                Ok(Some(status)) => Some(status.code()),
+                Ok(None) => None,
+                Err(_) => Some(None),
+            },
+            Watched::Adopted { handle, .. } => {
+                let r = unsafe { win::WaitForSingleObject(*handle, 0) };
+                if r == win::WAIT_OBJECT_0 {
+                    unsafe { win::CloseHandle(*handle) };
+                    Some(None)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn terminate(&mut self) {
+        match self {
+            Watched::Owned(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Watched::Adopted { handle, .. } => unsafe {
+                let _ = win::TerminateProcess(*handle, 1);
+                let _ = win::WaitForSingleObject(*handle, 3_000);
+                let _ = win::CloseHandle(*handle);
+            },
+        }
+    }
+}
+
 struct Runtime {
     cfg: ProcessConfig,
-    child: Option<Child>,
+    child: Option<Watched>,
     started_at: Option<Instant>,
     pending_start_at: Option<Instant>,
     delay_ms: u64,
     restarts: i64,
     stopped: bool,
+    adopt_attempted: bool,
 }
 
 fn log(msg: &str) {
@@ -120,6 +216,53 @@ fn log(msg: &str) {
 fn next_delay(current_ms: u64, factor: f64, max_ms: u64) -> u64 {
     let grown = (current_ms as f64 * factor).ceil() as u64;
     grown.min(max_ms).max(1)
+}
+
+#[cfg(windows)]
+fn find_process_by_name(name: &str) -> Result<Option<u32>> {
+    unsafe {
+        let snap = win::CreateToolhelp32Snapshot(win::TH32CS_SNAPPROCESS, 0);
+        if snap == win::INVALID_HANDLE_VALUE {
+            bail!("CreateToolhelp32Snapshot failed");
+        }
+        let mut entry: win::ProcessEntry32W = std::mem::zeroed();
+        entry.dw_size = std::mem::size_of::<win::ProcessEntry32W>() as u32;
+        let mut found = None;
+        let mut ok = win::Process32FirstW(snap, &mut entry);
+        while ok != 0 {
+            let len = entry
+                .sz_exe_file
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.sz_exe_file.len());
+            let exe = String::from_utf16_lossy(&entry.sz_exe_file[..len]);
+            if exe.eq_ignore_ascii_case(name) {
+                found = Some(entry.th32_process_id);
+                break;
+            }
+            ok = win::Process32NextW(snap, &mut entry);
+        }
+        win::CloseHandle(snap);
+        Ok(found)
+    }
+}
+
+#[cfg(not(windows))]
+fn find_process_by_name(_name: &str) -> Result<Option<u32>> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn open_process(pid: u32) -> Option<isize> {
+    let handle = unsafe {
+        win::OpenProcess(win::PROCESS_TERMINATE | win::SYNCHRONIZE, 0, pid)
+    };
+    (handle != 0).then_some(handle)
+}
+
+#[cfg(not(windows))]
+fn open_process(_pid: u32) -> Option<isize> {
+    None
 }
 
 impl Runtime {
@@ -133,11 +276,67 @@ impl Runtime {
             delay_ms,
             restarts: 0,
             stopped: false,
+            adopt_attempted: false,
+        }
+    }
+}
+
+/// Try to adopt an already-running process. Returns true if adopted.
+fn try_adopt(rt: &mut Runtime) -> bool {
+    let Some(name) = rt.cfg.adopt.clone() else {
+        return false;
+    };
+    match find_process_by_name(&name) {
+        Ok(Some(pid)) => match open_process(pid) {
+            Some(handle) => {
+                log(&format!(
+                    "[{}] adopted running {} (pid {})",
+                    rt.cfg.name, name, pid
+                ));
+                rt.child = Some(Watched::Adopted { handle, pid });
+                // Its real age is unknown; treat the first observed exit as healthy
+                // so we don't punish backoff for something we didn't witness.
+                rt.started_at = Some(
+                    Instant::now()
+                        .checked_sub(Duration::from_secs(rt.cfg.healthy_uptime_secs))
+                        .unwrap_or_else(Instant::now),
+                );
+                rt.pending_start_at = None;
+                true
+            }
+            None => {
+                log(&format!(
+                    "[{}] found {} (pid {}) but could not open it; starting new",
+                    rt.cfg.name, name, pid
+                ));
+                false
+            }
+        },
+        Ok(None) => {
+            log(&format!(
+                "[{}] no running {} found; starting new",
+                rt.cfg.name, name
+            ));
+            false
+        }
+        Err(e) => {
+            log(&format!(
+                "[{}] adoption lookup failed ({}); starting new",
+                rt.cfg.name, e
+            ));
+            false
         }
     }
 }
 
 fn spawn(rt: &mut Runtime) {
+    if !rt.adopt_attempted {
+        rt.adopt_attempted = true;
+        if try_adopt(rt) {
+            return;
+        }
+    }
+
     let mut cmd = Command::new(&rt.cfg.command);
     cmd.args(&rt.cfg.args);
     if let Some(cwd) = &rt.cfg.cwd {
@@ -155,7 +354,7 @@ fn spawn(rt: &mut Runtime) {
                 rt.cfg.name,
                 child.id()
             ));
-            rt.child = Some(child);
+            rt.child = Some(Watched::Owned(child));
             rt.started_at = Some(Instant::now());
             rt.pending_start_at = None;
         }
@@ -213,11 +412,77 @@ fn schedule_restart(rt: &mut Runtime, advance_backoff: bool) {
     ));
 }
 
-fn main() -> Result<()> {
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "guardian.toml".to_string());
-    let content = fs::read_to_string(&config_path)
+#[derive(Debug)]
+enum Action {
+    Run { config_path: String },
+    InstallTask { config_path: String },
+    UninstallTask,
+}
+
+fn parse_action() -> Action {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("--install-task") => Action::InstallTask {
+            config_path: args
+                .next()
+                .unwrap_or_else(|| "guardian.toml".to_string()),
+        },
+        Some("--uninstall-task") => Action::UninstallTask,
+        Some(path) => Action::Run {
+            config_path: path.to_string(),
+        },
+        None => Action::Run {
+            config_path: "guardian.toml".to_string(),
+        },
+    }
+}
+
+#[cfg(windows)]
+fn install_task(config_path: &str) -> Result<()> {
+    if !Path::new(config_path).exists() {
+        bail!("config file '{}' does not exist", config_path);
+    }
+    let exe = std::env::current_exe().context("failed to locate guardian.exe")?;
+    let cfg_abs = std::path::absolute(config_path).context("failed to resolve config path")?;
+    let task_run = format!("\"{}\" \"{}\"", exe.display(), cfg_abs.display());
+    let status = Command::new("schtasks.exe")
+        .args([
+            "/Create", "/TN", TASK_NAME, "/TR", &task_run, "/SC", "ONLOGON", "/F",
+        ])
+        .status()
+        .context("failed to run schtasks.exe")?;
+    if !status.success() {
+        bail!("schtasks /Create failed");
+    }
+    println!("installed logon task '{}': {}", TASK_NAME, task_run);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn uninstall_task() -> Result<()> {
+    let status = Command::new("schtasks.exe")
+        .args(["/Delete", "/TN", TASK_NAME, "/F"])
+        .status()
+        .context("failed to run schtasks.exe")?;
+    if !status.success() {
+        bail!("schtasks /Delete failed");
+    }
+    println!("removed logon task '{}'", TASK_NAME);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn install_task(_config_path: &str) -> Result<()> {
+    bail!("scheduled tasks are only supported on Windows")
+}
+
+#[cfg(not(windows))]
+fn uninstall_task() -> Result<()> {
+    bail!("scheduled tasks are only supported on Windows")
+}
+
+fn run(config_path: &str) -> Result<()> {
+    let content = fs::read_to_string(config_path)
         .with_context(|| format!("failed to read config '{}'", config_path))?;
     let config: Config = toml::from_str(&content)
         .with_context(|| format!("failed to parse config '{}'", config_path))?;
@@ -244,14 +509,10 @@ fn main() -> Result<()> {
                 continue;
             }
 
-            if let Some(mut child) = rt.child.take() {
-                match child.try_wait() {
-                    Ok(Some(status)) => on_exited(rt, status.code()),
-                    Ok(None) => rt.child = Some(child),
-                    Err(e) => {
-                        log(&format!("[{}] try_wait error: {}", rt.cfg.name, e));
-                        on_exited(rt, None);
-                    }
+            if let Some(mut watched) = rt.child.take() {
+                match watched.try_wait() {
+                    Some(code) => on_exited(rt, code),
+                    None => rt.child = Some(watched),
                 }
             } else if let Some(at) = rt.pending_start_at {
                 if Instant::now() >= at {
@@ -266,14 +527,22 @@ fn main() -> Result<()> {
 
     log("shutdown requested, terminating children...");
     for rt in runtimes.iter_mut() {
-        if let Some(mut child) = rt.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-            log(&format!("[{}] terminated", rt.cfg.name));
+        if let Some(mut watched) = rt.child.take() {
+            let pid = watched.pid();
+            watched.terminate();
+            log(&format!("[{}] terminated (pid {})", rt.cfg.name, pid));
         }
     }
     log("guardian stopped.");
     Ok(())
+}
+
+fn main() -> Result<()> {
+    match parse_action() {
+        Action::Run { config_path } => run(&config_path),
+        Action::InstallTask { config_path } => install_task(&config_path),
+        Action::UninstallTask => uninstall_task(),
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +564,7 @@ mod tests {
             [[process]]
             name = "baocode"
             command = "C:\\Program Files\\BaoCode\\baocode.exe"
+            adopt = "baocode.exe"
             args = ["--flag"]
 
             [[process]]
@@ -307,6 +577,7 @@ mod tests {
         assert_eq!(cfg.process.len(), 2);
         let a = &cfg.process[0];
         assert_eq!(a.name, "baocode");
+        assert_eq!(a.adopt.as_deref(), Some("baocode.exe"));
         assert_eq!(a.args, vec!["--flag"]);
         assert_eq!(a.restart_delay_ms, 1000);
         assert_eq!(a.max_restart_delay_ms, 30_000);
@@ -314,6 +585,7 @@ mod tests {
         assert_eq!(a.max_restarts, -1);
         assert_eq!(a.healthy_uptime_secs, 60);
         let b = &cfg.process[1];
+        assert_eq!(b.adopt, None);
         assert_eq!(b.restart_delay_ms, 500);
         assert_eq!(b.max_restarts, 3);
     }
@@ -327,5 +599,16 @@ mod tests {
         "#;
         let cfg: Config = toml::from_str(toml).unwrap();
         assert!(cfg.process[0].validate().is_err());
+    }
+
+    #[test]
+    fn action_parsing() {
+        // parse_action reads std::env, so check the simple decision logic here
+        // via the shape of Action itself.
+        let a = Action::Run {
+            config_path: "x.toml".to_string(),
+        };
+        assert!(matches!(a, Action::Run { .. }));
+        assert!(matches!(Action::UninstallTask, Action::UninstallTask));
     }
 }

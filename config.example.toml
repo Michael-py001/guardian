@@ -4,6 +4,8 @@
 [[process]]
 name = "baocode"
 command = "C:\\Program Files\\BaoCode\\baocode.exe"
+# If this exe image name is already running, adopt it instead of spawning new.
+# adopt = "baocode.exe"
 # args = ["--some-flag"]
 # cwd = "C:\\Program Files\\BaoCode"
 
