@@ -1,17 +1,22 @@
 use anyhow::{Context, Result, bail};
 use chrono::Local;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL_MS: u64 = 250;
 const TASK_NAME: &str = "Guardian";
+const CONFIG_RELOAD_INTERVAL_MS: u64 = 1_000;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+static CRASH_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[cfg(windows)]
 mod win {
@@ -73,13 +78,50 @@ fn install_ctrl_handler() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+fn log(msg: &str) {
+    let line = format!("[{}] {}\n", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
+    print!("{}", line);
+    let _ = std::io::stdout().flush();
+    if let Ok(mut guard) = LOG_FILE.lock()
+        && let Some(f) = guard.as_mut()
+    {
+        let _ = f.write_all(line.as_bytes());
+        let _ = f.flush();
+    }
+}
+
+/// Append one JSON line to the crash history file.
+fn record_crash(entry: &CrashEntry) {
+    let Some(path) = CRASH_FILE.lock().ok().and_then(|g| g.clone()) else {
+        return;
+    };
+    let mut line = match serde_json::to_string(entry) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    line.push('\n');
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CrashEntry {
+    time: String,
+    process: String,
+    pid: u32,
+    exit_code: String,
+    uptime_secs: u64,
+    restart_number: i64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 struct Config {
     #[serde(default)]
     process: Vec<ProcessConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct ProcessConfig {
     name: String,
     command: String,
@@ -197,27 +239,6 @@ impl Watched {
     }
 }
 
-struct Runtime {
-    cfg: ProcessConfig,
-    child: Option<Watched>,
-    started_at: Option<Instant>,
-    pending_start_at: Option<Instant>,
-    delay_ms: u64,
-    restarts: i64,
-    stopped: bool,
-    adopt_attempted: bool,
-}
-
-fn log(msg: &str) {
-    println!("[{}] {}", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
-}
-
-/// Compute the next backoff delay. Pure function so it can be tested in isolation.
-fn next_delay(current_ms: u64, factor: f64, max_ms: u64) -> u64 {
-    let grown = (current_ms as f64 * factor).ceil() as u64;
-    grown.min(max_ms).max(1)
-}
-
 #[cfg(windows)]
 fn find_process_by_name(name: &str) -> Result<Option<u32>> {
     unsafe {
@@ -254,15 +275,30 @@ fn find_process_by_name(_name: &str) -> Result<Option<u32>> {
 
 #[cfg(windows)]
 fn open_process(pid: u32) -> Option<isize> {
-    let handle = unsafe {
-        win::OpenProcess(win::PROCESS_TERMINATE | win::SYNCHRONIZE, 0, pid)
-    };
+    let handle = unsafe { win::OpenProcess(win::PROCESS_TERMINATE | win::SYNCHRONIZE, 0, pid) };
     (handle != 0).then_some(handle)
 }
 
 #[cfg(not(windows))]
 fn open_process(_pid: u32) -> Option<isize> {
     None
+}
+
+struct Runtime {
+    cfg: ProcessConfig,
+    child: Option<Watched>,
+    started_at: Option<Instant>,
+    pending_start_at: Option<Instant>,
+    delay_ms: u64,
+    restarts: i64,
+    stopped: bool,
+    adopt_attempted: bool,
+}
+
+/// Compute the next backoff delay. Pure function so it can be tested in isolation.
+fn next_delay(current_ms: u64, factor: f64, max_ms: u64) -> u64 {
+    let grown = (current_ms as f64 * factor).ceil() as u64;
+    grown.min(max_ms).max(1)
 }
 
 impl Runtime {
@@ -349,23 +385,19 @@ fn spawn(rt: &mut Runtime) {
 
     match cmd.spawn() {
         Ok(child) => {
-            log(&format!(
-                "[{}] started (pid {})",
-                rt.cfg.name,
-                child.id()
-            ));
+            log(&format!("[{}] started (pid {})", rt.cfg.name, child.id()));
             rt.child = Some(Watched::Owned(child));
             rt.started_at = Some(Instant::now());
             rt.pending_start_at = None;
         }
         Err(e) => {
             log(&format!("[{}] failed to start: {}", rt.cfg.name, e));
-            on_exited(rt, None);
+            on_exited(rt, None, 0);
         }
     }
 }
 
-fn on_exited(rt: &mut Runtime, status: Option<i32>) {
+fn on_exited(rt: &mut Runtime, status: Option<i32>, pid: u32) {
     let uptime = rt
         .started_at
         .map(|t| t.elapsed())
@@ -380,7 +412,18 @@ fn on_exited(rt: &mut Runtime, status: Option<i32>) {
         uptime.as_secs()
     ));
 
+    // Every exit is a crash-history record (including healthy closes, marked via
+    // the healthy flag in the log). The history file is an append-only audit.
     let healthy = uptime >= Duration::from_secs(rt.cfg.healthy_uptime_secs);
+    record_crash(&CrashEntry {
+        time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        process: rt.cfg.name.clone(),
+        pid,
+        exit_code: status_str,
+        uptime_secs: uptime.as_secs(),
+        restart_number: rt.restarts + 1,
+    });
+
     if healthy {
         log(&format!("[{}] was healthy, resetting backoff", rt.cfg.name));
         rt.delay_ms = rt.cfg.restart_delay_ms;
@@ -423,9 +466,7 @@ fn parse_action() -> Action {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--install-task") => Action::InstallTask {
-            config_path: args
-                .next()
-                .unwrap_or_else(|| "guardian.toml".to_string()),
+            config_path: args.next().unwrap_or_else(|| "guardian.toml".to_string()),
         },
         Some("--uninstall-task") => Action::UninstallTask,
         Some(path) => Action::Run {
@@ -437,6 +478,20 @@ fn parse_action() -> Action {
     }
 }
 
+fn load_config(config_path: &str) -> Result<Config> {
+    let content = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read config '{}'", config_path))?;
+    let config: Config = toml::from_str(&content)
+        .with_context(|| format!("failed to parse config '{}'", config_path))?;
+    if config.process.is_empty() {
+        bail!("config has no [[process]] entries");
+    }
+    for p in &config.process {
+        p.validate()?;
+    }
+    Ok(config)
+}
+
 #[cfg(windows)]
 fn install_task(config_path: &str) -> Result<()> {
     if !Path::new(config_path).exists() {
@@ -446,9 +501,7 @@ fn install_task(config_path: &str) -> Result<()> {
     let cfg_abs = std::path::absolute(config_path).context("failed to resolve config path")?;
     let task_run = format!("\"{}\" \"{}\"", exe.display(), cfg_abs.display());
     let status = Command::new("schtasks.exe")
-        .args([
-            "/Create", "/TN", TASK_NAME, "/TR", &task_run, "/SC", "ONLOGON", "/F",
-        ])
+        .args(["/Create", "/TN", TASK_NAME, "/TR", &task_run, "/SC", "ONLOGON", "/F"])
         .status()
         .context("failed to run schtasks.exe")?;
     if !status.success() {
@@ -481,37 +534,131 @@ fn uninstall_task() -> Result<()> {
     bail!("scheduled tasks are only supported on Windows")
 }
 
-fn run(config_path: &str) -> Result<()> {
-    let content = fs::read_to_string(config_path)
-        .with_context(|| format!("failed to read config '{}'", config_path))?;
-    let config: Config = toml::from_str(&content)
-        .with_context(|| format!("failed to parse config '{}'", config_path))?;
+/// Ordered diff of old vs new config by process name. Returns (to_remove, to_add, to_update).
+fn diff_config(
+    old: &[Runtime],
+    new: &Config,
+) -> (Vec<String>, Vec<ProcessConfig>, Vec<(String, ProcessConfig)>) {
+    let new_by_name: HashMap<&str, &ProcessConfig> =
+        new.process.iter().map(|p| (p.name.as_str(), p)).collect();
+    let old_names: HashMap<&str, &Runtime> =
+        old.iter().map(|r| (r.cfg.name.as_str(), r)).collect();
 
-    if config.process.is_empty() {
-        bail!("config has no [[process]] entries");
+    let mut to_remove = Vec::new();
+    for r in old {
+        if !new_by_name.contains_key(r.cfg.name.as_str()) {
+            to_remove.push(r.cfg.name.clone());
+        }
     }
-    for p in &config.process {
-        p.validate()?;
+    let mut to_add = Vec::new();
+    let mut to_update = Vec::new();
+    for p in &new.process {
+        match old_names.get(p.name.as_str()) {
+            None => to_add.push(p.clone()),
+            Some(r) => {
+                // Config changed if any tuning field differs (comparison by TOML value).
+                let old_val = toml::to_string(&r.cfg).unwrap_or_default();
+                let new_val = toml::to_string(p).unwrap_or_default();
+                if old_val != new_val {
+                    to_update.push((p.name.clone(), p.clone()));
+                }
+            }
+        }
     }
+    (to_remove, to_add, to_update)
+}
+
+fn run(config_path: &str) -> Result<()> {
+    let config = load_config(config_path)?;
+
+    // Log + crash history paths live next to the config file.
+    let cfg_dir = Path::new(config_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let log_path = cfg_dir.join("guardian.log");
+    let crash_path = cfg_dir.join("crash-history.jsonl");
+    *LOG_FILE.lock().unwrap() = Some(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("failed to open log '{}'", log_path.display()))?,
+    );
+    *CRASH_FILE.lock().unwrap() = Some(crash_path.clone());
 
     install_ctrl_handler()?;
 
-    let mut runtimes: Vec<Runtime> = config.process.into_iter().map(Runtime::new).collect();
+    let mut runtimes: Vec<Runtime> = config.process.iter().cloned().map(Runtime::new).collect();
     log(&format!(
         "guardian started, watching {} process(es). Ctrl+C to stop.",
         runtimes.len()
     ));
+    log(&format!("log: {}", log_path.display()));
+    log(&format!("crash history: {}", crash_path.display()));
 
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
+    let mut last_config_check = Instant::now();
+    let mut last_config_mtime = fs::metadata(config_path).and_then(|m| m.modified()).ok();
+
     while !SHUTDOWN.load(Ordering::SeqCst) {
+        // --- Hot reload: poll config mtime, apply changes in place ---
+        if last_config_check.elapsed() >= Duration::from_millis(CONFIG_RELOAD_INTERVAL_MS) {
+            last_config_check = Instant::now();
+            let mtime = fs::metadata(config_path).and_then(|m| m.modified()).ok();
+            if mtime != last_config_mtime {
+                last_config_mtime = mtime;
+                match load_config(config_path) {
+                    Ok(new_config) => {
+                        let (to_remove, to_add, to_update) = diff_config(&runtimes, &new_config);
+
+                        for name in to_remove {
+                            if let Some(pos) = runtimes.iter().position(|r| r.cfg.name == name) {
+                                let mut rt = runtimes.remove(pos);
+                                if let Some(mut w) = rt.child.take() {
+                                    let pid = w.pid();
+                                    w.terminate();
+                                    log(&format!("[{}] config removed, terminated (pid {})", name, pid));
+                                }
+                            }
+                        }
+                        for (name, new_cfg) in to_update {
+                            if let Some(rt) = runtimes.iter_mut().find(|r| r.cfg.name == name) {
+                                rt.cfg = new_cfg;
+                                rt.delay_ms = rt.cfg.restart_delay_ms;
+                                rt.restarts = 0;
+                                rt.stopped = false;
+                                // Terminate the old process so it restarts with new settings.
+                                if let Some(mut w) = rt.child.take() {
+                                    w.terminate();
+                                }
+                                rt.pending_start_at = Some(Instant::now());
+                                rt.adopt_attempted = false;
+                                log(&format!("[{}] config updated, restarting with new settings", name));
+                            }
+                        }
+                        for cfg in to_add {
+                            log(&format!("[{}] config added, starting", cfg.name));
+                            runtimes.push(Runtime::new(cfg));
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("config reload failed ({}); keeping previous config", e));
+                    }
+                }
+            }
+        }
+
         for rt in runtimes.iter_mut() {
             if rt.stopped {
                 continue;
             }
 
             if let Some(mut watched) = rt.child.take() {
+                let pid = watched.pid();
                 match watched.try_wait() {
-                    Some(code) => on_exited(rt, code),
+                    Some(code) => on_exited(rt, code, pid),
                     None => rt.child = Some(watched),
                 }
             } else if let Some(at) = rt.pending_start_at {
@@ -603,12 +750,42 @@ mod tests {
 
     #[test]
     fn action_parsing() {
-        // parse_action reads std::env, so check the simple decision logic here
-        // via the shape of Action itself.
         let a = Action::Run {
             config_path: "x.toml".to_string(),
         };
         assert!(matches!(a, Action::Run { .. }));
         assert!(matches!(Action::UninstallTask, Action::UninstallTask));
+    }
+
+    #[test]
+    fn diff_detects_changes() {
+        let old_toml = r#"
+            [[process]]
+            name = "a"
+            command = "a.exe"
+            restart_delay_ms = 1000
+            [[process]]
+            name = "b"
+            command = "b.exe"
+        "#;
+        let old_cfg: Config = toml::from_str(old_toml).unwrap();
+        let old: Vec<Runtime> = old_cfg.process.iter().cloned().map(Runtime::new).collect();
+
+        let new_toml = r#"
+            [[process]]
+            name = "a"
+            command = "a.exe"
+            restart_delay_ms = 5000
+            [[process]]
+            name = "c"
+            command = "c.exe"
+        "#;
+        let new_cfg: Config = toml::from_str(new_toml).unwrap();
+        let (remove, add, update) = diff_config(&old, &new_cfg);
+        assert_eq!(remove, vec!["b"]);
+        assert_eq!(add.len(), 1);
+        assert_eq!(add[0].name, "c");
+        assert_eq!(update.len(), 1);
+        assert_eq!(update[0].0, "a");
     }
 }

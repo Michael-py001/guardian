@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/guardian.exe dist/
+          Copy-Item config.example.toml dist/guardian.toml
+          Copy-Item README.md dist/
+          Copy-Item LICENSE dist/
+          Compress-Archive -Path dist/* -DestinationPath guardian-windows-x86_64.zip
+      - name: Upload Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: guardian-windows-x86_64.zip
+          generate_release_notes: true

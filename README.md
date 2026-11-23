@@ -17,6 +17,8 @@ it at any executable.
 - Configurable backoff, max-restart cap, and "healthy uptime" reset.
 - Adopt an already-running process instead of always spawning a new one.
 - Register a logon task for auto-start (runs in your desktop session, GUI visible).
+- File logging and an append-only JSONL crash history.
+- Hot config reload — edit the TOML without restarting guardian.
 - Ctrl+C / console-close gracefully terminates children.
 
 中文说明见下方 [中文文档](#中文文档)。
@@ -36,6 +38,12 @@ copy config.example.toml guardian.toml
 ```
 
 With no argument it looks for `guardian.toml` in the current directory.
+
+### Don't want to build?
+
+Grab `guardian-windows-x86_64.zip` from the [Releases](https://github.com/Michael-py001/guardian/releases)
+page — it contains the exe plus example config, README and license. (A Release is
+published automatically when a `v*` tag is pushed.)
 
 ## Config reference
 
@@ -91,6 +99,34 @@ path of the config at install time; re-run `--install-task` if you move the file
 A Windows Service is intentionally **not** used: services run in Session 0 and
 GUI apps started there have no visible window on your desktop.
 
+## Logs and crash history
+
+Two files are written next to the config file:
+
+- `guardian.log` — the same lines you see on the console, with timestamps.
+- `crash-history.jsonl` — one JSON object per process exit (append-only), useful
+  for counting crashes over time or feeding into other tools:
+
+```json
+{"time":"2026-11-23 14:24:42","process":"baocode","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
+```
+
+`uptime_secs` is how long the process lived; a healthy close has a large value,
+a fast crash has a small one.
+
+## Hot config reload
+
+Guardian checks the config file every second. Edit `guardian.toml` and changes
+apply automatically, no restart needed:
+
+- **Process added** → started immediately.
+- **Process removed** → terminated.
+- **Settings changed** (command, args, backoff, etc.) → process terminated and
+  restarted with the new settings.
+- **Invalid edit** → logged and ignored; the previous config stays active.
+
+Processes are matched by `name`, so keep names stable when editing.
+
 ## How it behaves
 
 For each process, guardian spawns it (or adopts it) and polls every 250 ms. On exit:
@@ -140,6 +176,8 @@ MIT — see [LICENSE](LICENSE).
 - 可配置退避、最大重启次数、"健康存活时间"重置。
 - 支持接管已在运行的进程，而不总是新起一个。
 - 可注册登录自启计划任务（运行在桌面会话，GUI 窗口可见）。
+- 日志落盘 + 追加式 JSONL 崩溃历史。
+- 配置热重载——改 TOML 不用重启。
 - Ctrl+C / 关闭控制台时优雅终止子进程。
 
 ### 快速开始
@@ -157,6 +195,10 @@ copy config.example.toml guardian.toml
 ```
 
 不带参数时默认读取当前目录的 `guardian.toml`。
+
+不想自己编译？到 [Releases](https://github.com/Michael-py001/guardian/releases)
+下载 `guardian-windows-x86_64.zip`，内含 exe、示例配置、README 和许可证
+（推送 `v*` 标签时自动发布）。
 
 ### 配置字段
 
@@ -210,6 +252,31 @@ guardian.exe --uninstall-task
 
 故意不做成 Windows 服务：服务运行在 Session 0，在那里启动的 GUI 程序在桌面
 上看不到窗口。
+
+### 日志与崩溃历史
+
+配置文件所在目录会生成两个文件：
+
+- `guardian.log` —— 与控制台相同的带时间戳日志。
+- `crash-history.jsonl` —— 每次进程退出追加一条 JSON（只追加不覆盖），便于
+  统计历史崩溃次数或交给其他工具分析：
+
+```json
+{"time":"2026-11-23 14:24:42","process":"baocode","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
+```
+
+`uptime_secs` 是进程存活时长：正常关闭是大值，快速崩溃是小值。
+
+### 配置热重载
+
+guardian 每秒检查一次配置文件。编辑 `guardian.toml` 后自动生效，无需重启：
+
+- **新增进程** → 立即启动。
+- **删除进程** → 终止。
+- **设置变更**（command、args、退避等）→ 终止旧进程并用新设置重启。
+- **改错了** → 记录日志并忽略，继续使用旧配置。
+
+进程按 `name` 匹配，改配置时请保持名字稳定。
 
 ### 行为
 
