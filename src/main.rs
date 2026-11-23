@@ -510,6 +510,25 @@ impl eframe::App for GuardianApp {
             else if event.id == quit_id { self.quit(ctx); }
         }
 
+        // Keyboard shortcuts advertised in the menu: Ctrl+N add, Del remove, Esc close dialogs.
+        // Skip Del while a text field has focus so editing is never swallowed.
+        let editing = ctx.memory(|m| m.focused().is_some());
+        let (ctrl_n, del, esc) = ctx.input(|i| (
+            i.modifiers.ctrl && i.key_pressed(egui::Key::N),
+            i.key_pressed(egui::Key::Delete),
+            i.key_pressed(egui::Key::Escape),
+        ));
+        if ctrl_n {
+            self.add.open = true;
+            self.add.processes_loaded = false;
+        } else if del && !editing {
+            self.remove_selected();
+        }
+        if esc {
+            self.add.open = false;
+            self.about_open = false;
+        }
+
         if let Ok(s) = self.sink.lock() { self.statuses = s.clone(); }
         if self.last_crash_refresh.elapsed() >= std::time::Duration::from_millis(500) {
             self.crashes = engine::read_crash_history(&crash_path());
@@ -527,7 +546,10 @@ impl eframe::App for GuardianApp {
         // ---- Custom title bar (frameless window) ----
         egui::TopBottomPanel::top("titlebar").exact_height(34.0).show(ctx, |ui| {
             let response = ui.interact(ui.max_rect(), ui.id().with("drag"), egui::Sense::drag());
-            if response.dragged() {
+            if response.double_clicked() {
+                let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+            } else if response.dragged() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             ui.horizontal(|ui| {
