@@ -432,16 +432,30 @@ impl GuardianApp {
         lanes
     }
 
-    /// Fraction of the last 24h without a crash: online / total. No crashes => 100%.
+    /// Health score: fraction of the last 24h without a crash (1 crash ≈ 2 min down).
+    /// No uptime log exists, so this is a conservative estimate, not a measurement.
     fn health_ratio(&self) -> f32 {
         use chrono::{Local, NaiveDateTime};
         let now = Local::now().naive_local();
-        let in_window = self.crashes.iter().filter_map(|c| {
-            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S").ok()
-        }).filter(|t| (now - *t).num_hours() < 24).count();
-        // ponytail: one crash ≈ 2 minutes of downtime; no uptime log exists to be more precise.
-        let downtime_secs = in_window as f32 * 120.0;
-        (86400.0 - downtime_secs.min(86400.0)) / 86400.0
+        let crashes = self.crashes.iter().filter(|c| {
+            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S")
+                .map(|t| (now - t).num_hours() < 24).unwrap_or(false)
+        }).count() as f32;
+        // ponytail: one crash ≈ 2 minutes of downtime; upgrade when real uptime is logged.
+        (86400.0 - (crashes * 120.0).min(86400.0)) / 86400.0
+    }
+
+    /// Honest counters for the health card: (running now, stopped now, crashes in 24h).
+    fn health_counts(&self) -> (usize, usize, usize) {
+        use chrono::{Local, NaiveDateTime};
+        let running = self.statuses.iter().filter(|x| x.running).count();
+        let stopped = self.statuses.iter().filter(|x| !x.running).count();
+        let now = Local::now().naive_local();
+        let crashes = self.crashes.iter().filter(|c| {
+            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S")
+                .map(|t| (now - t).num_hours() < 24).unwrap_or(false)
+        }).count();
+        (running, stopped, crashes)
     }
 }
 
@@ -609,6 +623,7 @@ impl eframe::App for GuardianApp {
             // Chart band: trend + health ring. Side by side when wide, stacked when narrow.
             let (trend_values, trend_labels) = self.trend_data();
             let health = self.health_ratio();
+            let (h_running, h_stopped, h_crashes) = self.health_counts();
             let trend_card = |ui: &mut egui::Ui| {
                 egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
                     .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
@@ -627,9 +642,18 @@ impl eframe::App for GuardianApp {
                         ui.horizontal(|ui| {
                             ui::ring_chart(ui, self.theme, health);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(s.label_online).size(12.0).color(p.muted));
-                                ui.label(egui::RichText::new(s.label_restarting).size(12.0).color(p.muted));
-                                ui.label(egui::RichText::new(s.label_offline).size(12.0).color(p.muted));
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(s.label_online).size(11.0).color(p.muted));
+                                    ui.label(egui::RichText::new(format!("{}", h_running)).size(11.0).color(p.green));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(s.label_crashes_24h).size(11.0).color(p.muted));
+                                    ui.label(egui::RichText::new(format!("{}", h_crashes)).size(11.0).color(p.amber));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(s.label_offline).size(11.0).color(p.muted));
+                                    ui.label(egui::RichText::new(format!("{}", h_stopped)).size(11.0).color(p.red));
+                                });
                             });
                         });
                     });
