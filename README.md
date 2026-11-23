@@ -7,10 +7,8 @@ A tiny, config-driven process guardian for Windows. It launches the processes
 you list in a TOML config, watches them, and restarts them if they crash — with
 exponential backoff so a broken app doesn't spin your CPU.
 
-Built for the case where a desktop app you rely on (e.g. BaoCode) gets taken
-down by buggy injected DLLs from enterprise security software and you need it
-to come back automatically during unattended runs. It is fully generic: point
-it at any executable.
+Useful for any long-running app or service you want to keep alive unattended.
+It is fully generic: point it at any executable.
 
 - Single native binary, ~500 KB, no runtime to install.
 - Multiple processes in one config.
@@ -55,7 +53,7 @@ See [config.example.toml](config.example.toml). Every field:
 |---|---|---|
 | `name` | required | Label used in log lines. |
 | `command` | required | Executable path or name on PATH. |
-| `adopt` | none | If set and a process with this image name is already running, adopt it instead of spawning (Windows, case-insensitive, e.g. `"baocode.exe"`). |
+| `adopt` | none | If set and a process with this image name is already running, adopt it instead of spawning (Windows, case-insensitive, e.g. `"myapp.exe"`). |
 | `args` | `[]` | Argument list. |
 | `cwd` | inherit | Working directory. |
 | `env` | `{}` | Extra environment variables. |
@@ -75,12 +73,12 @@ open when guardian starts, set `adopt` to its executable image name:
 
 ```toml
 [[process]]
-name = "baocode"
-command = "C:\\Program Files\\BaoCode\\baocode.exe"
-adopt = "baocode.exe"
+name = "my-app"
+command = "C:\\Program Files\\MyApp\\myapp.exe"
+adopt = "myapp.exe"
 ```
 
-Guardian will look for `baocode.exe` on startup. If found, it watches that
+Guardian will look for `myapp.exe` on startup. If found, it watches that
 process (and restarts it via `command` if it dies). If not found, it starts a
 fresh one. Adoption is attempted only once, at first start.
 
@@ -128,7 +126,7 @@ Two files are written next to the config file:
   for counting crashes over time or feeding into other tools:
 
 ```json
-{"time":"2026-11-23 14:24:42","process":"baocode","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
+{"time":"2026-11-23 14:24:42","process":"my-app","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
 ```
 
 `uptime_secs` is how long the process lived; a healthy close has a large value,
@@ -178,11 +176,6 @@ including adopted ones.
 - **Adoption matches the exe image name**, not a full path or arguments. Two
   processes with the same image name are ambiguous — guardian adopts the first.
 - **It is not a Windows Service** (see Auto-start above for why).
-- **UniAccess caveat:** the injected DLL hooks `CreateProcessW`. Guardian also
-  calls `CreateProcess` to spawn your app, so if the DLL crashes on a path with
-  spaces, the guardian's own spawn could be affected. Its call surface is far
-  smaller than a GUI app's, but the real fix is to add your app to UniAccess's
-  whitelist. This tool is a safety net, not a cure.
 
 ## License
 
@@ -195,8 +188,7 @@ MIT — see [LICENSE](LICENSE).
 一个轻量的、配置驱动的 Windows 进程守护工具。在 TOML 配置里列出要守护的程序，
 它负责启动、监控，并在崩溃时按指数退避自动重启——避免坏掉的程序空转烧 CPU。
 
-起源：你依赖的桌面程序（如 BaoCode）被企业安全软件注入的 DLL 搞崩，无人值守时
-需要它自动恢复。本工具完全通用，可指向任意可执行文件。
+适用于任何需要无人值守持续运行的程序或服务，完全通用，可指向任意可执行文件。
 
 - 单个原生 exe，约 500 KB，无需运行时。
 - 一个配置可守护多个进程。
@@ -237,7 +229,7 @@ copy config.example.toml guardian.toml
 |---|---|---|
 | `name` | 必填 | 日志里显示的名字。 |
 | `command` | 必填 | 可执行文件路径或 PATH 中的名字。 |
-| `adopt` | 无 | 若设置了且同名进程已在运行，则接管它而不新起（Windows，不区分大小写，如 `"baocode.exe"`）。 |
+| `adopt` | 无 | 若设置了且同名进程已在运行，则接管它而不新起（Windows，不区分大小写，如 `"myapp.exe"`）。 |
 | `args` | `[]` | 参数列表。 |
 | `cwd` | 继承 | 工作目录。 |
 | `env` | `{}` | 额外环境变量。 |
@@ -257,12 +249,12 @@ exe 映像名即可接管：
 
 ```toml
 [[process]]
-name = "baocode"
-command = "C:\\Program Files\\BaoCode\\baocode.exe"
-adopt = "baocode.exe"
+name = "my-app"
+command = "C:\\Program Files\\MyApp\\myapp.exe"
+adopt = "myapp.exe"
 ```
 
-guardian 启动时会查找 `baocode.exe`：找到就接管（死了再用 `command` 重启）；
+guardian 启动时会查找 `myapp.exe`：找到就接管（死了再用 `command` 重启）；
 没找到就新起一个。接管只在首次启动时尝试一次。
 
 ### 登录自启（Windows）
@@ -309,7 +301,7 @@ guardian.exe --tray guardian.toml
   统计历史崩溃次数或交给其他工具分析：
 
 ```json
-{"time":"2026-11-23 14:24:42","process":"baocode","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
+{"time":"2026-11-23 14:24:42","process":"my-app","pid":93140,"exit_code":"7","uptime_secs":0,"restart_number":1}
 ```
 
 `uptime_secs` 是进程存活时长：正常关闭是大值，快速崩溃是小值。
@@ -350,10 +342,6 @@ Ctrl+C 或关闭控制台时，guardian 会终止它持有的所有进程，包�
 - **接管是按 exe 映像名匹配的**，不是完整路径或参数。两个同名进程无法区分——
   guardian 接管第一个。
 - **不是 Windows 服务**（原因见"登录自启"）。
-- **UniAccess 注意**：注入的 DLL 挂钩了 `CreateProcessW`。guardian 也调用
-  `CreateProcess` 启动程序，所以若该 DLL 对带空格路径必崩，guardian 自身启动
-  也可能受影响；但它的调用面比 GUI 程序小得多。真正的解法仍是把程序加入
-  UniAccess 白名单。本工具是兜底，不是根治。
 
 ### 许可证
 

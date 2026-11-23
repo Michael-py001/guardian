@@ -2,12 +2,12 @@
 # Each [[process]] block is one process to launch and keep alive.
 
 [[process]]
-name = "baocode"
-command = "C:\\Program Files\\BaoCode\\baocode.exe"
+name = "my-app"
+command = "C:\\Program Files\\MyApp\\myapp.exe"
 # If this exe image name is already running, adopt it instead of spawning new.
-# adopt = "baocode.exe"
+# adopt = "myapp.exe"
 # args = ["--some-flag"]
-# cwd = "C:\\Program Files\\BaoCode"
+# cwd = "C:\\Program Files\\MyApp"
 
 # [env]
 # SOME_VAR = "value"

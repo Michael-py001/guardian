@@ -251,7 +251,7 @@ struct ProcessConfig {
     command: String,
     /// If set and a process with this image name is already running, adopt it
     /// instead of spawning a new one. On Windows this is an exe file name like
-    /// "baocode.exe" (case-insensitive).
+    /// "myapp.exe" (case-insensitive).
     #[serde(default)]
     adopt: Option<String>,
     #[serde(default)]
@@ -1112,9 +1112,9 @@ mod tests {
     fn config_defaults_and_values() {
         let toml = r#"
             [[process]]
-            name = "baocode"
-            command = "C:\\Program Files\\BaoCode\\baocode.exe"
-            adopt = "baocode.exe"
+            name = "my-app"
+            command = "C:\\Program Files\\MyApp\\myapp.exe"
+            adopt = "myapp.exe"
             args = ["--flag"]
 
             [[process]]
@@ -1126,8 +1126,8 @@ mod tests {
         let cfg: Config = toml::from_str(toml).unwrap();
         assert_eq!(cfg.process.len(), 2);
         let a = &cfg.process[0];
-        assert_eq!(a.name, "baocode");
-        assert_eq!(a.adopt.as_deref(), Some("baocode.exe"));
+        assert_eq!(a.name, "my-app");
+        assert_eq!(a.adopt.as_deref(), Some("myapp.exe"));
         assert_eq!(a.args, vec!["--flag"]);
         assert_eq!(a.restart_delay_ms, 1000);
         assert_eq!(a.max_restart_delay_ms, 30_000);
@@ -1197,7 +1197,7 @@ mod tests {
     fn crash_entry_json_roundtrip() {
         let entry = CrashEntry {
             time: "2026-11-23 14:24:42".to_string(),
-            process: "baocode".to_string(),
+            process: "my-app".to_string(),
             pid: 1234,
             exit_code: "7".to_string(),
             uptime_secs: 3,
@@ -1205,7 +1205,7 @@ mod tests {
         };
         let line = serde_json::to_string(&entry).unwrap();
         let back: CrashEntry = serde_json::from_str(&line).unwrap();
-        assert_eq!(back.process, "baocode");
+        assert_eq!(back.process, "my-app");
         assert_eq!(back.pid, 1234);
         assert_eq!(back.restart_number, 1);
     }
