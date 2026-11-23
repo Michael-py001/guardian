@@ -344,7 +344,7 @@ impl eframe::App for GuardianApp {
                         if ui.button(s.menu_lang_zh).clicked() { self.set_lang(Lang::Zh, ctx); ui.close_menu(); }
                         if ui.button(s.menu_lang_en).clicked() { self.set_lang(Lang::En, ctx); ui.close_menu(); }
                     });
-                    ui.menu_button("主题 / Theme", |ui| {
+                    ui.menu_button(s.menu_theme, |ui| {
                         if ui.button(s.menu_theme_light).clicked() { self.set_theme(Theme::Light, ctx); ui.close_menu(); }
                         if ui.button(s.menu_theme_dark).clicked() { self.set_theme(Theme::Dark, ctx); ui.close_menu(); }
                     });
