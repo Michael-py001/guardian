@@ -196,6 +196,48 @@ pub fn ring_chart(ui: &mut Ui, theme: Theme, ratio: f32) {
     );
 }
 
+/// Restart pulse: one lane per process, restart events as ticks on a 60-minute axis.
+/// `lanes` is (name, minutes-ago of each restart in the last hour), newest last.
+pub fn pulse_chart(ui: &mut Ui, theme: Theme, lanes: &[(String, Vec<f32>)]) {
+    let p = palette(theme);
+    let row_h = 22.0;
+    let label_w = 96.0;
+    let height = (lanes.len() as f32 * row_h).max(row_h) + 14.0;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height), egui::Sense::hover());
+    let paint = ui.painter();
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + label_w, rect.top()),
+        egui::pos2(rect.right() - 4.0, rect.bottom() - 12.0),
+    );
+    for (i, (name, events)) in lanes.iter().enumerate() {
+        let cy = rect.top() + i as f32 * row_h + row_h / 2.0;
+        paint.text(egui::pos2(rect.left(), cy), egui::Align2::LEFT_CENTER,
+            name, egui::FontId::proportional(11.0), p.muted);
+        paint.line_segment(
+            [egui::pos2(track.left(), cy), egui::pos2(track.right(), cy)],
+            Stroke::new(1.0_f32, p.track),
+        );
+        for &mins_ago in events {
+            if mins_ago < 0.0 || mins_ago > 60.0 { continue; }
+            let x = track.right() - (mins_ago / 60.0) * track.width();
+            let hot = events.iter().filter(|&&m| m < 20.0).count() >= 3;
+            let color = if hot { p.red } else { p.muted };
+            paint.line_segment(
+                [egui::pos2(x, cy - 5.0), egui::pos2(x, cy + 5.0)],
+                Stroke::new(2.0_f32, color),
+            );
+        }
+    }
+    let now_x = track.right();
+    paint.line_segment(
+        [egui::pos2(now_x, track.top()), egui::pos2(now_x, track.bottom())],
+        Stroke::new(1.0_f32, p.accent),
+    );
+    paint.text(egui::pos2(now_x, rect.bottom()), egui::Align2::RIGHT_BOTTOM,
+        "now", egui::FontId::proportional(9.0), p.accent);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

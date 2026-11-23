@@ -81,6 +81,9 @@ struct TrayState {
     quit: MenuItem,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View { Overview, Processes, History, Settings }
+
 struct GuardianApp {
     configs: Vec<ProcessConfig>,
     statuses: Vec<EntryStatus>,
@@ -101,6 +104,7 @@ struct GuardianApp {
     about_open: bool,
     search: String,
     quitting: bool,
+    view: View,
 }
 
 impl GuardianApp {
@@ -113,7 +117,7 @@ impl GuardianApp {
             autostart: engine::task_installed(), toast: None,
             last_crash_refresh: std::time::Instant::now(), tray,
             lang: st.lang, theme: st.theme, font_installed: false,
-            about_open: false, search: String::new(), quitting: false,
+            about_open: false, search: String::new(), quitting: false, view: View::Overview,
         };
         app.load();
         app.spawn_watcher();
@@ -249,7 +253,11 @@ impl GuardianApp {
     }
 
     fn open_log(&mut self) {
-        let _ = std::process::Command::new("notepad.exe").arg(log_path()).spawn();
+        // Open with the system's default text viewer via the shell, no console window.
+        let _ = std::process::Command::new("rundll32.exe")
+            .arg("shell32.dll,ShellExec_RunDLL")
+            .arg(log_path())
+            .spawn();
     }
 
     fn set_lang(&mut self, lang: Lang, ctx: &egui::Context) {
@@ -264,6 +272,118 @@ impl GuardianApp {
         self.theme = theme;
         ui::apply_visuals(ctx, theme);
         self.persist_settings();
+    }
+
+    /// Processes view: the full guarded-process table, no charts.
+    fn draw_processes(&mut self, ui: &mut egui::Ui) {
+        let s = strings(self.lang);
+        let p = ui::palette(self.theme);
+        ui.heading(egui::RichText::new(s.nav_processes).size(24.0).color(p.ink));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(s.add_button).clicked() { self.add.open = true; self.add.processes_loaded = false; }
+            if ui.button(s.remove_button).clicked() { self.remove_selected(); }
+            let label = if self.paused { s.resume_button } else { s.pause_button };
+            if ui.button(label).clicked() { self.toggle_pause(); }
+            if ui.button(s.menu_restart_all).clicked() { self.restart_all(); }
+            ui.add_space(6.0);
+            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(s.search_hint).desired_width(160.0));
+        });
+        if let Some(toast) = &self.toast {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(toast).color(p.amber));
+        }
+        ui.add_space(8.0);
+        let filter = self.search.to_lowercase();
+        let visible: Vec<usize> = (0..self.configs.len())
+            .filter(|&i| filter.is_empty() || self.configs[i].name.to_lowercase().contains(&filter))
+            .collect();
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(12.0, 8.0)).show(ui, |ui| {
+            egui::Grid::new("processes").num_columns(5).striped(false).spacing([16.0, 8.0]).show(ui, |ui| {
+                for h in [s.col_name, s.col_status, s.col_pid, s.col_restarts, s.col_last_exit] {
+                    ui.label(egui::RichText::new(h).size(11.0).color(p.muted));
+                }
+                ui.end_row();
+                for idx in visible {
+                    let cfg = &self.configs[idx];
+                    let status = self.statuses.get(idx);
+                    if ui.selectable_label(self.selected == Some(idx), &cfg.name).clicked() { self.selected = Some(idx); }
+                    let is_running = status.map(|x| x.running).unwrap_or(false);
+                    let (label, color) = if self.paused { (s.paused, p.amber) }
+                        else if is_running { (s.running, p.green) }
+                        else { (s.stopped, p.red) };
+                    ui.horizontal(|ui| {
+                        ui.painter().circle_filled(ui.cursor().min + egui::vec2(3.0, 8.0), 3.0, color);
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(label).size(12.0).color(color));
+                    });
+                    ui.label(status.and_then(|x| x.pid).map(|v| v.to_string()).unwrap_or_else(|| "-".into()));
+                    ui.label(status.map(|x| x.restarts.to_string()).unwrap_or_else(|| "0".into()));
+                    ui.label(status.and_then(|x| x.last_exit.clone()).unwrap_or_else(|| "-".into()));
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
+    /// History view: the full crash log, newest first.
+    fn draw_history(&mut self, ui: &mut egui::Ui) {
+        let s = strings(self.lang);
+        let p = ui::palette(self.theme);
+        ui.heading(egui::RichText::new(s.nav_history).size(24.0).color(p.ink));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(12.0).color(p.muted));
+            if ui.button(s.menu_clear_history).clicked() { self.clear_history(); }
+        });
+        ui.add_space(8.0);
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
+            if self.crashes.is_empty() {
+                ui.label(egui::RichText::new(s.history_empty).size(12.0).color(p.muted));
+            } else {
+                for c in self.crashes.iter().rev() {
+                    ui.label(egui::RichText::new(s.crash_line
+                        .replace("{t}", &c.time).replace("{p}", &c.process)
+                        .replace("{pid}", &c.pid.to_string()).replace("{code}", &c.exit_code)
+                        .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string())
+                    ).size(12.0).color(p.ink));
+                }
+            }
+        });
+    }
+
+    /// Settings view: language, theme and autostart, each self-saving.
+    fn draw_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let s = strings(self.lang);
+        let p = ui::palette(self.theme);
+        ui.heading(egui::RichText::new(s.settings_title).size(24.0).color(p.ink));
+        ui.label(egui::RichText::new(s.settings_hint).size(11.0).color(p.muted));
+        ui.add_space(12.0);
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(16.0, 14.0)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(s.settings_language).size(13.0).strong().color(p.ink));
+                ui.add_space(12.0);
+                if ui.selectable_label(self.lang == Lang::Zh, s.menu_lang_zh).clicked() { self.set_lang(Lang::Zh, ctx); }
+                if ui.selectable_label(self.lang == Lang::En, s.menu_lang_en).clicked() { self.set_lang(Lang::En, ctx); }
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(s.settings_theme).size(13.0).strong().color(p.ink));
+                ui.add_space(12.0);
+                if ui.selectable_label(self.theme == Theme::Light, s.menu_theme_light).clicked() { self.set_theme(Theme::Light, ctx); }
+                if ui.selectable_label(self.theme == Theme::Dark, s.menu_theme_dark).clicked() { self.set_theme(Theme::Dark, ctx); }
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(s.settings_autostart).size(13.0).strong().color(p.ink));
+                ui.add_space(12.0);
+                let label = if self.autostart { s.autostart_on } else { s.autostart_off };
+                if ui.button(label).clicked() { self.toggle_autostart(); }
+            });
+        });
     }
 
     fn update_tray_labels(&mut self) {
@@ -293,6 +413,23 @@ impl GuardianApp {
             .map(|i| (now - chrono::Duration::hours((11 - i) as i64)).format("%H:%M").to_string())
             .collect();
         (counts, labels)
+    }
+
+    /// Restart events in the last hour, grouped by process name (minutes ago).
+    fn pulse_data(&self) -> Vec<(String, Vec<f32>)> {
+        use chrono::{Local, NaiveDateTime};
+        let now = Local::now().naive_local();
+        let mut lanes: Vec<(String, Vec<f32>)> = self.configs.iter()
+            .map(|c| (c.name.clone(), Vec::new())).collect();
+        for crash in &self.crashes {
+            let Ok(t) = NaiveDateTime::parse_from_str(&crash.time, "%Y-%m-%d %H:%M:%S") else { continue };
+            let mins = (now - t).num_seconds() as f32 / 60.0;
+            if mins < 0.0 || mins > 60.0 { continue; }
+            if let Some(lane) = lanes.iter_mut().find(|(name, _)| *name == crash.process) {
+                lane.1.push(mins);
+            }
+        }
+        lanes
     }
 
     /// Fraction of the last 24h without a crash: online / total. No crashes => 100%.
@@ -337,6 +474,31 @@ impl eframe::App for GuardianApp {
 
         let s = strings(self.lang);
         let p = ui::palette(self.theme);
+
+        // ---- Icon rail: switch between the four views ----
+        egui::SidePanel::left("rail").exact_width(48.0).resizable(false).show(ctx, |ui| {
+            let mut rail_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, view: View| {
+                let active = self.view == view;
+                let btn = ui.add_sized([40.0, 38.0], egui::Button::new(
+                    egui::RichText::new(glyph).size(17.0).color(if active { p.ink } else { p.muted }))
+                    .frame(false));
+                if btn.clicked() { self.view = view; }
+                let r = btn.rect;
+                btn.on_hover_text(tip);
+                if active {
+                    ui.painter().line_segment(
+                        [egui::pos2(r.left(), r.top() + 8.0), egui::pos2(r.left(), r.bottom() - 8.0)],
+                        egui::Stroke::new(2.0_f32, p.accent));
+                }
+            };
+            ui.add_space(6.0);
+            rail_btn(ui, "▦", s.nav_overview, View::Overview);
+            rail_btn(ui, "≣", s.nav_processes, View::Processes);
+            rail_btn(ui, "◷", s.nav_history, View::History);
+            ui.add_space(6.0);
+            ui.separator();
+            rail_btn(ui, "⚙", s.nav_settings, View::Settings);
+        });
 
         // ---- Menu bar ----
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
@@ -400,6 +562,14 @@ impl eframe::App for GuardianApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Views other than Overview get their own body.
+            match self.view {
+                View::Processes => { self.draw_processes(ui); return; }
+                View::History => { self.draw_history(ui); return; }
+                View::Settings => { self.draw_settings(ui, ctx); return; }
+                View::Overview => {}
+            }
+
             let running = self.statuses.iter().filter(|x| x.running).count();
             let total_restarts: i64 = self.statuses.iter().map(|x| x.restarts).sum();
 
@@ -483,6 +653,29 @@ impl eframe::App for GuardianApp {
                 ui.add_space(10.0);
                 health_card(ui);
             }
+            ui.add_space(12.0);
+
+            // Restart pulse: this product's signature view
+            let pulse = self.pulse_data();
+            egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+                .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
+                    ui.label(egui::RichText::new(s.chart_pulse).size(14.0).strong().color(p.ink));
+                    ui.label(egui::RichText::new(s.chart_pulse_meta).size(11.0).color(p.muted));
+                    ui.horizontal(|ui| {
+                        let a = ui.cursor().min;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(a + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.muted);
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new(s.pulse_event).size(10.0).color(p.muted));
+                        ui.add_space(8.0);
+                        let b = ui.cursor().min;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(b + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.red);
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new(s.pulse_cluster).size(10.0).color(p.muted));
+                    });
+                    ui::pulse_chart(ui, self.theme, &pulse);
+                });
             ui.add_space(12.0);
 
             // Guarded processes table
@@ -652,7 +845,8 @@ fn main() -> eframe::Result<()> {
     let st = load_settings();
     let title = strings(st.lang).app_title;
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1120.0, 760.0]).with_title(title),
+        // Logical points; keep it DPI-safe so all columns fit at 150% scaling.
+        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_title(title),
         ..Default::default()
     };
     eframe::run_native("Guardian", options, Box::new(move |cc| {

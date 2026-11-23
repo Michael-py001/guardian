@@ -687,7 +687,7 @@ mod tests {
         let toml = r#"
             [[process]]
             name = "app"
-            command = "C:\\Windows\\notepad.exe"
+            command = "app.exe"
         "#;
         let cfg: Config = toml::from_str(toml).unwrap();
         let p = &cfg.process[0];
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn config_roundtrip() {
         let cfg = Config {
-            process: vec![ProcessConfig::new("app".into(), "notepad.exe".into())],
+            process: vec![ProcessConfig::new("app".into(), "app.exe".into())],
         };
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
