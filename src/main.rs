@@ -585,6 +585,11 @@ impl eframe::App for GuardianApp {
             ui.add_space(6.0);
             ui.separator();
             rail_btn(ui, "⚙", s.nav_settings, View::Settings);
+            ui.add_space((ui.available_height() - 44.0).max(0.0));
+            let about = ui.add_sized([40.0, 38.0], egui::Button::new(
+                egui::RichText::new("ⓘ").size(17.0).color(p.muted)).frame(false));
+            if about.clicked() { self.about_open = true; }
+            about.on_hover_text(s.menu_about);
         });
 
         // ---- Menu bar ----
