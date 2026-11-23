@@ -21,6 +21,11 @@ fn should_minimize_to_tray(close_requested: bool, quitting: bool) -> bool {
     close_requested && !quitting
 }
 
+/// Fill two `{}` placeholders in order. `str::replace` would fill both with the first value.
+fn fill2(template: &str, first: &str, second: &str) -> String {
+    template.replacen("{}", first, 1).replacen("{}", second, 1)
+}
+
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -603,11 +608,11 @@ impl eframe::App for GuardianApp {
 
             // Title row
             ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
-            let running_fmt = s.subtitle_running.replace("{}", &running.to_string()).replacen("{}", &self.configs.len().to_string(), 1);
+            let running_fmt = fill2(s.subtitle_running, &running.to_string(), &self.configs.len().to_string());
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
                 if let Some((name, n)) = self.top_crasher_today() {
-                    let finding = s.subtitle_finding.replace("{}", &name).replacen("{}", &n.to_string(), 1);
+                    let finding = fill2(s.subtitle_finding, &name, &n.to_string());
                     ui.label(egui::RichText::new(finding).size(12.0).color(p.amber).strong());
                 }
             });
@@ -906,7 +911,13 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod close_tests {
-    use super::should_minimize_to_tray;
+    use super::{fill2, should_minimize_to_tray};
+
+    #[test]
+    fn fill2_replaces_placeholders_in_order() {
+        assert_eq!(fill2("{} of {} entries", "3", "5"), "3 of 5 entries");
+        assert_eq!(fill2("{} restarted {} times", "Demo", "5"), "Demo restarted 5 times");
+    }
 
     #[test]
     fn only_window_close_minimizes_to_tray() {
