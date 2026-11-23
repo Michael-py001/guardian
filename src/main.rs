@@ -445,6 +445,20 @@ impl GuardianApp {
         (86400.0 - (crashes * 120.0).min(86400.0)) / 86400.0
     }
 
+    /// The process with the most restarts today, for the subtitle finding.
+    fn top_crasher_today(&self) -> Option<(String, usize)> {
+        use chrono::{Local, NaiveDateTime};
+        let today = Local::now().date_naive();
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for c in &self.crashes {
+            if let Ok(t) = NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S") {
+                if t.date() == today { *counts.entry(&c.process).or_insert(0) += 1; }
+            }
+        }
+        counts.into_iter().max_by_key(|(_, n)| *n)
+            .map(|(name, n)| (name.to_string(), n))
+    }
+
     /// Honest counters for the health card: (running now, stopped now, crashes in 24h).
     fn health_counts(&self) -> (usize, usize, usize) {
         use chrono::{Local, NaiveDateTime};
@@ -590,7 +604,13 @@ impl eframe::App for GuardianApp {
             // Title row
             ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
             let running_fmt = s.subtitle_running.replace("{}", &running.to_string()).replacen("{}", &self.configs.len().to_string(), 1);
-            ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
+                if let Some((name, n)) = self.top_crasher_today() {
+                    let finding = s.subtitle_finding.replace("{}", &name).replacen("{}", &n.to_string(), 1);
+                    ui.label(egui::RichText::new(finding).size(12.0).color(p.amber).strong());
+                }
+            });
             ui.add_space(12.0);
 
             // KPI strip: one container, hairline dividers

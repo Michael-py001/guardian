@@ -53,6 +53,7 @@ pub struct Str {
     pub restarts_total: &'static str,
     pub crash_records: &'static str,
     pub subtitle_running: &'static str, // template: "3 of 5 entries are running"
+    pub subtitle_finding: &'static str, // template: "{name} restarted {n} times"
     pub chart_restart_trend: &'static str,
     pub chart_trend_meta: &'static str,
     pub chart_uptime: &'static str,
@@ -173,6 +174,7 @@ static ZH: Str = Str {
     restarts_total: "累计重启",
     crash_records: "崩溃记录",
     subtitle_running: "{} 个正在运行 / 共 {} 个守护项",
+    subtitle_finding: "{} 今日重启 {} 次",
     chart_restart_trend: "重启趋势",
     chart_trend_meta: "重启次数 · 最近 12 小时",
     chart_uptime: "运行时健康度",
@@ -281,6 +283,7 @@ static EN: Str = Str {
     restarts_total: "Restarts",
     crash_records: "Crashes",
     subtitle_running: "{} of {} entries are running",
+    subtitle_finding: "{} restarted {} times today",
     chart_restart_trend: "Restart trend",
     chart_trend_meta: "Restarts · last 12 hours",
     chart_uptime: "Uptime health",
