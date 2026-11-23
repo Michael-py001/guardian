@@ -15,16 +15,21 @@ window, tray icon, no runtime to install.
 
 ## Features
 
-- Graphical window: add / remove guarded programs with a click.
+- **Full menu bar** (File / Guard / View / Help) and a clean, modern dashboard
+  with live stat cards (guarding / total / restarts / crashes).
 - **Two ways to add**: browse for an `.exe`, or pick from the list of currently
   running processes (adopt an app that is already open).
-- Live status table: running / stopped, PID, restart count, last exit.
-- Crash history with counts, expandable in the window.
+- Live status table with search, plus **pause / resume** and restart-all.
+- **中文 / English toggle** and **light / dark theme**, both remembered across
+  restarts.
+- Crash history panel with counts and a clear-history action.
+- Open the data folder / log file straight from the File menu.
 - System-tray icon with **Show window / Autostart / Exit**; closing the window
   hides it to the tray and keeps guarding.
-- Logon autostart toggle in the GUI (Windows scheduled task, runs in your
-  desktop session).
+- Logon autostart toggle (Windows scheduled task, runs in your desktop session).
 - Exponential backoff: 1s → 2s → 4s … capped at 30s, reset after a healthy run.
+- Chinese text uses a system font, so the UI is legible on any modern Windows
+  without bundling a large font file.
 
 ## Quick start
 
@@ -52,6 +57,7 @@ executable**:
 | `guardian.toml` | The programs you added (written by the GUI; edit by hand only if you know TOML). |
 | `guardian.log` | Timestamped log of starts, exits and restarts. |
 | `crash-history.jsonl` | Append-only JSON record of every exit. |
+| `settings.json` | Remembered language (`zh`/`en`) and theme (`light`/`dark`). |
 
 Put the extracted folder somewhere writable (e.g. your Documents or a tools
 folder), not `C:\Program Files`, so Guardian can save these files.
@@ -91,13 +97,16 @@ MIT — see [LICENSE](LICENSE).
 
 ### 功能
 
-- 图形窗口：点一下就添加 / 删除守护项。
+- **完整菜单栏**（文件 / 守护 / 视图 / 帮助）与现代化仪表盘：实时统计卡片（守护中 / 总计 / 累计重启 / 崩溃记录）。
 - **两种添加方式**：浏览选择 `.exe` 文件，或从当前运行进程列表里选（接管已打开的程序）。
-- 实时状态表：运行 / 停止、PID、重启次数、最近退出。
-- 崩溃历史：次数统计，可在窗口内展开查看。
+- 实时状态表带搜索，支持**暂停 / 恢复**与重启全部。
+- **中文 / English 一键切换**、**浅色 / 深色主题**，都会记住，下次启动保持。
+- 崩溃历史：次数统计、可展开查看、可一键清空。
+- 从「文件」菜单直接打开数据目录与日志文件。
 - 托盘图标：**显示窗口 / 开机自启 / 退出**；关闭窗口只是缩到托盘，守护继续。
-- 界面内切换登录自启（Windows 计划任务，运行在桌面会话）。
+- 开机自启开关（Windows 计划任务，运行在桌面会话）。
 - 指数退避：1s → 2s → 4s … 封顶 30s，健康运行后重置。
+- 中文使用系统字体渲染，任何现代 Windows 都清晰，无需内置大字体文件。
 
 ### 快速开始
 

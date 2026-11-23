@@ -65,6 +65,14 @@ fn record_crash(entry: &CrashEntry) {
     }
 }
 
+pub fn clear_crash_history(path: &Path) -> std::io::Result<()> {
+    match std::fs::write(path, "") {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn read_crash_history(path: &Path) -> Vec<CrashEntry> {
     fs::read_to_string(path)
         .unwrap_or_default()
@@ -530,6 +538,7 @@ pub struct Watcher {
     runtimes: Vec<Runtime>,
     sink: StatusSink,
     stop: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
 }
 
 impl Watcher {
@@ -538,12 +547,18 @@ impl Watcher {
             runtimes: config.process.iter().cloned().map(Runtime::new).collect(),
             sink,
             stop: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// A handle that can stop this watcher from another thread.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         self.stop.clone()
+    }
+
+    /// A handle to pause/resume auto-restarting from another thread.
+    pub fn pause_handle(&self) -> Arc<AtomicBool> {
+        self.pause.clone()
     }
 
     fn publish_statuses(&self) {
@@ -558,6 +573,20 @@ impl Watcher {
     pub fn run(&mut self) {
         let poll = Duration::from_millis(POLL_INTERVAL_MS);
         while !self.stop.load(Ordering::SeqCst) && !SHUTDOWN.load(Ordering::SeqCst) {
+            if self.pause.load(Ordering::SeqCst) {
+                // While paused, still detect exits but do not auto-restart.
+                for rt in self.runtimes.iter_mut() {
+                    if let Some(mut watched) = rt.child.take() {
+                        match watched.try_wait() {
+                            Some(_) => { /* leave stopped; no restart */ }
+                            None => rt.child = Some(watched),
+                        }
+                    }
+                }
+                self.publish_statuses();
+                std::thread::sleep(poll);
+                continue;
+            }
             for rt in self.runtimes.iter_mut() {
                 if rt.stopped {
                     continue;
