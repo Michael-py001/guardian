@@ -508,6 +508,37 @@ impl eframe::App for GuardianApp {
         let s = strings(self.lang);
         let p = ui::palette(self.theme);
 
+        // ---- Custom title bar (frameless window) ----
+        egui::TopBottomPanel::top("titlebar").exact_height(34.0).show(ctx, |ui| {
+            let response = ui.interact(ui.max_rect(), ui.id().with("drag"), egui::Sense::drag());
+            if response.dragged() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                // Shield mark drawn from the product's own symbol.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "◈",
+                    egui::FontId::proportional(14.0), p.accent);
+                ui.label(egui::RichText::new(s.app_title).size(12.0).strong().color(p.ink));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
+                        let r = ui.add_sized([30.0, 30.0], egui::Button::new(
+                            egui::RichText::new(glyph).size(12.0).color(p.muted)).frame(false));
+                        r.on_hover_text(tip).clicked()
+                    };
+                    if btn(ui, "✕", s.menu_quit) { self.quit(ctx); }
+                    if btn(ui, "□", s.title) {
+                        let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                    }
+                    if btn(ui, "─", s.menu_minimize_tray) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                });
+            });
+        });
+
         // ---- Icon rail: switch between the four views ----
         egui::SidePanel::left("rail").exact_width(48.0).resizable(false).show(ctx, |ui| {
             let mut rail_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, view: View| {
@@ -895,7 +926,10 @@ fn main() -> eframe::Result<()> {
     let title = strings(st.lang).app_title;
     let options = eframe::NativeOptions {
         // Logical points; keep it DPI-safe so all columns fit at 150% scaling.
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_title(title),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([880.0, 620.0])
+            .with_title(title)
+            .with_decorations(false),
         ..Default::default()
     };
     eframe::run_native("Guardian", options, Box::new(move |cc| {
