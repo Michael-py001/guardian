@@ -18,7 +18,7 @@ unsafe extern "system" fn console_ctrl_handler(_ctrl_type: u32) -> i32 {
 }
 
 #[cfg(windows)]
-extern "system" {
+unsafe extern "system" {
     fn SetConsoleCtrlHandler(
         handler: Option<unsafe extern "system" fn(u32) -> i32>,
         add: i32,
