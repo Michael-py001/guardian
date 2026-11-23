@@ -33,7 +33,7 @@ window, tray icon, no runtime to install.
 
 ## Quick start
 
-Download `guardian-windows-x86_64.zip` from
+Download `guardian-vX.Y.Z-windows-x86_64.zip` (e.g. `guardian-v0.3.0-windows-x86_64.zip`) from
 [Releases](https://github.com/Michael-py001/guardian/releases), extract it and
 run `guardian.exe`. A window appears — no console, no setup.
 
@@ -111,7 +111,7 @@ MIT — see [LICENSE](LICENSE).
 ### 快速开始
 
 从 [Releases](https://github.com/Michael-py001/guardian/releases) 下载
-`guardian-windows-x86_64.zip`，解压后运行 `guardian.exe`。直接出现窗口——
+`guardian-vX.Y.Z-windows-x86_64.zip`（如 `guardian-v0.3.0-windows-x86_64.zip`），解压后运行 `guardian.exe`。直接出现窗口——
 没有控制台，无需安装。
 
 点 **Add entry**，选一个可执行文件（或运行中的进程），Guardian 立即开始守护。

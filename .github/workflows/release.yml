@@ -28,9 +28,9 @@ jobs:
           Copy-Item LICENSE dist/
           Copy-Item config.example.toml dist/
           # No default guardian.toml: the GUI starts empty; users add entries there.
-          Compress-Archive -Path dist/* -DestinationPath guardian-windows-x86_64.zip
+          Compress-Archive -Path dist/* -DestinationPath "guardian-${env:GITHUB_REF_NAME}-windows-x86_64.zip"
       - name: Upload Release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: guardian-windows-x86_64.zip
+          files: guardian-${{ github.ref_name }}-windows-x86_64.zip
           generate_release_notes: true
