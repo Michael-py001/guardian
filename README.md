@@ -16,7 +16,9 @@ window, tray icon, no runtime to install.
 ## Features
 
 - **Full menu bar** (File / Guard / View / Help) and a clean, modern dashboard
-  with live stat cards (guarding / total / restarts / crashes).
+  with live stat cards (guarding / total / restarts / crashes), a 12-hour restart
+  trend with peak annotation, an uptime-health ring, and a **restart-pulse**
+  swimlane showing each process's crashes over the last hour.
 - **Two ways to add**: browse for an `.exe`, or pick from the list of currently
   running processes (adopt an app that is already open).
 - Live status table with search, plus **pause / resume** and restart-all.
@@ -97,7 +99,7 @@ MIT — see [LICENSE](LICENSE).
 
 ### 功能
 
-- **完整菜单栏**（文件 / 守护 / 视图 / 帮助）与现代化仪表盘：实时统计卡片（守护中 / 总计 / 累计重启 / 崩溃记录）。
+- **完整菜单栏**（文件 / 守护 / 视图 / 帮助）与现代化仪表盘：实时统计卡片（守护中 / 总计 / 累计重启 / 崩溃记录）、带峰值标注的 12 小时重启趋势、运行时健康度环图，以及**重启脉冲**泳道图（每个守护项最近一小时的崩溃时间轴）。
 - **两种添加方式**：浏览选择 `.exe` 文件，或从当前运行进程列表里选（接管已打开的程序）。
 - 实时状态表带搜索，支持**暂停 / 恢复**与重启全部。
 - **中文 / English 一键切换**、**浅色 / 深色主题**，都会记住，下次启动保持。
