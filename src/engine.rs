@@ -452,6 +452,9 @@ fn spawn(rt: &mut Runtime) {
             rt.child = Some(Watched::Owned(child));
             rt.started_at = Some(Instant::now());
             rt.pending_start_at = None;
+            // Show the last exit only while stopped; a healthy running process
+            // should not display a stale exit message.
+            rt.last_exit = None;
         }
         Err(e) => {
             log(&format!("[{}] failed to start: {}", rt.cfg.name, e));
