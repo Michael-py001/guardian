@@ -1,3 +1,5 @@
 /target
+/release
+/.taste-skill
 guardian.toml
 *.log

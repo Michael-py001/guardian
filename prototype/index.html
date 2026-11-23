@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardian — 可视化进程守护</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ================= tokens — data-terminal (dark), with a light companion ================= */
+:root {
+  --ground:#171719; --surface:#131217; --raised:#212023; --border:#222224; --rule:#1b1a1f;
+  --control:#3a3a3e; --text:#fff; --muted:#8a8c92; --faint:#8a8c92;
+  --accent:#4a8ad6; --positive:#44a282; --negative:#e5566f; --warning:#d9a441;
+  --pill-run-bg:#1b2828; --pill-run-ink:#5fc39c;
+  --pill-stop-bg:#2c1a20; --pill-stop-ink:#e5566f;
+  --pill-pause-bg:#2a2416; --pill-pause-ink:#d9a441;
+  --grid:#2b2b2b; --shadow:0 12px 28px rgba(0,0,0,.2);
+  --chart-1:#6aa6e8; --chart-2:#e5566f; --chart-3:#4a8ad6; --chart-muted:#3a3a3e;
+  --axis-ink:#8a8c92; --ink:#fff; --chart-span:.12;
+  --rail:56px; --topbar:42px; --menubar:34px; --gap:24px; --pad:30px;
+  --r-card:6px; --r-ctl:999px; --ctl-h:34px; --row-h:46px;
+  --font:"Public Sans",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+  --fs-title:26px; --fs-kpi:20px; --fs-body:13px; --fs-small:12px;
+}
+:root[data-theme="light"] {
+  --ground:#f5f6f8; --surface:#ffffff; --raised:#eef0f3; --border:#e5e7eb; --rule:#eef0f2;
+  --control:#c9cdd4; --text:#16181d; --muted:#5f6368; --faint:#6b6b6b;
+  --accent:#2f6fc0; --positive:#247b50; --negative:#c4242a; --warning:#92400e;
+  --pill-run-bg:#dcfae5; --pill-run-ink:#04250e;
+  --pill-stop-bg:#ffedea; --pill-stop-ink:#831c1e;
+  --pill-pause-bg:#fffbeb; --pill-pause-ink:#92400e;
+  --grid:#e8eaee; --shadow:0 10px 24px rgba(20,25,35,.08);
+  --chart-1:#2f6fc0; --chart-2:#c4242a; --chart-3:#2f6fc0; --chart-muted:#d5d9df;
+  --axis-ink:#5f6368; --ink:#16181d; --chart-span:.06;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ground);color:var(--text);font:var(--fs-body)/20px var(--font);-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+/* ================= window chrome ================= */
+.window{height:100vh;display:flex;flex-direction:column;min-width:0}
+.titlebar{height:var(--topbar);flex:none;display:flex;align-items:center;padding:0 14px;gap:12px;background:var(--ground);border-bottom:1px solid var(--rule)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-mark{width:20px;height:20px;flex:none}
+.brand-name{font-weight:600;font-size:13px;letter-spacing:.01em;white-space:nowrap}
+.brand-scope{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.titlebar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.live{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;white-space:nowrap}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--positive)}
+.winctl{display:flex;gap:2px}
+.wc{width:34px;height:28px;display:grid;place-items:center;color:var(--muted);border-radius:5px}
+.wc:hover{background:var(--raised);color:var(--text)}
+.wc.close:hover{background:var(--negative);color:#fff}
+.wc svg{width:12px;height:12px}
+
+/* ================= menu bar ================= */
+.menubar{height:var(--menubar);flex:none;display:flex;align-items:stretch;gap:2px;padding:0 10px;background:var(--ground);border-bottom:1px solid var(--rule);position:relative;z-index:5}
+.menu{position:relative;display:flex;align-items:center}
+.menu>button{padding:0 11px;height:100%;font-size:12.5px;color:var(--muted);border-radius:5px}
+.menu>button:hover,.menu.open>button{background:var(--raised);color:var(--text)}
+.menu-panel{display:none;position:absolute;top:100%;left:0;min-width:212px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:6px}
+.menu.open .menu-panel{display:block}
+.menu-item{display:flex;align-items:center;justify-content:space-between;gap:24px;width:100%;padding:7px 10px;border-radius:5px;font-size:12.5px;color:var(--text);white-space:nowrap;text-align:left}
+.menu-item:hover{background:var(--raised)}
+.menu-item .key{color:var(--muted);font-family:var(--mono);font-size:11px}
+.menu-item .tick{color:var(--accent);width:12px}
+.menu-item .tick::before{content:"";display:inline-block;width:9px;height:5px;border-left:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(-45deg) translate(1px,-1px)}
+.menu-sep{height:1px;background:var(--border);margin:5px 8px}
+.submenu{position:relative}
+.submenu .menu-panel{top:-6px;left:100%;min-width:150px}
+.submenu:hover .menu-panel{display:block}
+.caret{margin-left:auto;color:var(--muted)}
+
+/* ================= shell: rail + canvas ================= */
+.shell{display:grid;grid-template-columns:var(--rail) minmax(0,1fr);flex:1;min-height:0}
+.rail{background:var(--ground);border-right:1px solid var(--rule);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px}
+.rail-btn{position:relative;width:46px;height:44px;display:grid;place-items:center;color:var(--muted);border-radius:7px}
+.rail-btn svg{width:18px;height:18px}
+.rail-btn:hover{color:var(--text);background:var(--raised)}
+.rail-btn.active{color:var(--text)}
+.rail-btn.active::before{content:"";position:absolute;left:-5px;top:11px;bottom:11px;width:2px;background:var(--accent);border-radius:2px}
+.rail-sep{width:22px;height:1px;background:var(--border);margin:12px 0}
+.rail-spacer{flex:1}
+
+.canvas{min-width:0;overflow:auto;padding:var(--pad)}
+.canvas-inner{max-width:1180px;margin:0 auto}
+
+/* ================= title row ================= */
+.title-row{display:flex;align-items:flex-end;gap:20px;margin-bottom:22px}
+h1{font-size:var(--fs-title);font-weight:600;letter-spacing:-.02em;line-height:1.2}
+.subtitle{color:var(--muted);font-size:13px;margin-top:5px}
+.subtitle b{color:var(--warning);font-weight:600}
+.title-actions{margin-left:auto;display:flex;gap:10px;align-items:center}
+.btn{height:var(--ctl-h);padding:0 14px;border-radius:var(--r-ctl);font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.btn svg{width:14px;height:14px}
+.btn-primary{background:var(--text);color:var(--ground)}
+.btn-primary:hover{opacity:.86}
+.btn-ghost{border:1px solid var(--control);color:var(--text)}
+.btn-ghost:hover{background:var(--raised)}
+
+/* ================= KPI strip: one card, hairline dividers ================= */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
+.kpi{padding:18px 22px;position:relative}
+.kpi+.kpi::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:1px;background:var(--border)}
+.kpi-label{font-size:12px;color:var(--muted);margin-bottom:9px}
+.kpi-value{font-size:var(--fs-kpi);font-weight:500;line-height:1;letter-spacing:-.01em}
+.kpi.lead .kpi-value{font-size:27px}
+.kpi-value .u{font-size:12px;color:var(--muted);margin-left:4px;font-family:var(--font)}
+.kpi-note{font-size:11.5px;color:var(--muted);margin-top:8px}
+.kpi-note.alert{color:var(--negative)}
+
+/* ================= chart band ================= */
+.charts{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:var(--gap);margin-top:var(--gap);align-items:stretch}
+.chart-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);overflow:hidden;display:flex;flex-direction:column}
+.chart-card .card-body{padding:14px 20px 16px;flex:1;display:flex;flex-direction:column;justify-content:center}
+.chart-host{min-height:150px}
+.ring-row{display:flex;align-items:center;gap:20px}
+.ring-figs{display:grid;gap:12px;flex:1;min-width:0}
+.ring-fig{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+.ring-fig .k{color:var(--muted)}
+.ring-fig .v{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.ring-fig .v.ok{color:var(--positive)}
+.chart-legend{display:flex;gap:14px;font-size:11.5px;color:var(--muted)}
+.chart-legend span{display:inline-flex;align-items:center;gap:6px}
+.chart-legend i{width:8px;height:8px;border-radius:2px;background:var(--chart-1)}
+.finding{margin-top:14px;font-size:12px;color:var(--muted);line-height:1.5}
+
+/* ================= cards ================= */
+.grid-main{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:var(--gap);margin-top:var(--gap);align-items:start}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);overflow:hidden}
+.card-head{display:flex;align-items:center;gap:12px;padding:15px 20px;border-bottom:1px solid var(--rule)}
+.card-title{font-size:14px;font-weight:600}
+.card-meta{font-size:11.5px;color:var(--muted);margin-left:auto}
+.card-body{padding:6px 20px 16px}
+
+/* signature element — watch pulse: one lane per process, restart ticks on a 60-min axis */
+.pulse-legend{display:flex;gap:16px;font-size:11.5px;color:var(--muted)}
+.pulse-legend span{display:inline-flex;align-items:center;gap:6px}
+.lg-mark{width:8px;height:8px;border-radius:2px;background:var(--muted)}
+.lg-mark.hot{background:var(--negative)}
+.pulse{position:relative;padding:10px 0 2px}
+.axis{display:flex;justify-content:space-between;color:var(--muted);font-size:10.5px;font-family:var(--mono);margin-left:118px;margin-right:22px;margin-bottom:4px}
+.lane{display:grid;grid-template-columns:118px minmax(0,1fr);align-items:center;height:34px;gap:0}
+.lane-name{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:12px}
+.track{position:relative;height:22px}
+.track-line{position:absolute;left:0;right:0;top:10px;height:1px;background:var(--grid)}
+.tick{position:absolute;top:5px;width:2px;height:11px;border-radius:2px;background:var(--muted)}
+.tick.hot{background:var(--negative)}
+.tick.hot::after{content:"";position:absolute;left:-2px;right:-2px;top:-4px;height:19px;background:color-mix(in srgb,var(--negative) 16%,transparent);border-radius:3px;z-index:-1}
+.now{position:absolute;top:2px;bottom:2px;width:1px;background:var(--accent)}
+.now::after{content:"now";position:absolute;top:-13px;left:-9px;font-size:9px;color:var(--accent);font-family:var(--mono)}
+
+/* ================= guard table ================= */
+.toolbar{display:flex;align-items:center;gap:10px;padding:12px 20px;border-bottom:1px solid var(--rule)}
+.search{height:32px;min-width:220px;flex:1;max-width:320px;border:1px solid var(--control);border-radius:var(--r-ctl);background:var(--ground);padding:0 12px;font-size:12.5px;color:var(--text)}
+.search::placeholder{color:var(--faint)}
+.search-wrap{position:relative;display:flex;align-items:center}
+.search-wrap svg{position:absolute;left:11px;width:14px;height:14px;color:var(--muted)}
+.search-wrap input{padding-left:32px}
+.tool-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
+.count{font-size:12px;color:var(--muted);margin-left:auto;white-space:nowrap}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{font-size:11.5px;font-weight:400;color:var(--muted);text-align:left;padding:11px 20px;white-space:nowrap}
+thead th.num{text-align:right}
+tbody td{padding:0 20px;height:var(--row-h);border-top:1px solid var(--rule);white-space:nowrap}
+tbody tr:hover{background:var(--raised)}
+td.name{font-weight:500}
+td.sub{color:var(--muted);font-size:11.5px}
+td.num{text-align:right}
+.pill{display:inline-flex;align-items:center;gap:6px;height:21px;padding:0 9px;border-radius:var(--r-ctl);font-size:11px;font-weight:500}
+.pill .d{width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.run{color:var(--pill-run-ink);background:var(--pill-run-bg)}
+.pill.stop{color:var(--pill-stop-ink);background:var(--pill-stop-bg)}
+.pill.pause{color:var(--pill-pause-ink);background:var(--pill-pause-bg)}
+.row-act{color:var(--muted);font-size:11.5px}
+.row-act:hover{color:var(--accent)}
+tbody tr.selected{background:var(--raised)}
+tbody tr.selected td.name{border-left:2px solid var(--accent);padding-left:18px}
+
+/* ================= crash history rail ================= */
+.events{padding:4px 20px 14px}
+.event{padding:11px 0;border-bottom:1px solid var(--rule)}
+.event:last-child{border-bottom:0}
+.event-top{display:flex;align-items:baseline;gap:8px}
+.event-name{font-size:12.5px;font-weight:500}
+.event-time{margin-left:auto;font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.event-detail{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5}
+.event-code{font-family:var(--mono);color:var(--negative)}
+.empty-hint{font-size:12px;color:var(--muted);padding:14px 0}
+.footer-note{padding:12px 20px;border-top:1px solid var(--rule);display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px}
+.link{color:var(--accent)}
+
+/* ================= language + theme switcher (the live element) ================= */
+.floating{position:fixed;right:22px;bottom:20px;display:flex;gap:8px;z-index:8}
+.chip{height:36px;padding:0 14px;border-radius:var(--r-ctl);background:var(--surface);border:1px solid var(--control);font-size:12px;display:inline-flex;align-items:center;gap:8px}
+.chip:hover{border-color:var(--control)}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.hint{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;color:var(--muted);font-size:11px;z-index:7}
+
+/* ================= tablet: stack the two working cards ================= */
+@media(max-width:1100px){
+  .grid-main,.charts{grid-template-columns:1fr}
+  .axis{margin-right:32px}
+}
+
+/* ================= phone ================= */
+@media(max-width:760px){
+  body{overflow:auto}
+  .window{height:auto;min-height:100vh}
+  .shell{grid-template-columns:1fr}
+  .rail{flex-direction:row;justify-content:space-around;border-right:0;border-top:1px solid var(--rule);order:2;padding:8px 0}
+  .rail-btn{height:44px}
+  .rail-sep,.rail-spacer{display:none}
+  .canvas{order:1;padding:18px}
+  .kpis{grid-template-columns:1fr 1fr}
+  .kpi:nth-child(3)::before{display:block}
+  .kpi:nth-child(odd)::before{display:none}
+  .grid-main{grid-template-columns:1fr}
+  title-actions{flex-wrap:wrap}
+  .title-row{flex-wrap:wrap;align-items:flex-start}
+  .title-actions{margin-left:0}
+  .subtitle{max-width:100%}
+  table,thead,tbody,tr,td{display:block}
+  thead{display:none}
+  tbody tr{padding:10px 16px;border-top:1px solid var(--rule)}
+  tbody td{height:auto;padding:2px 0;border:0;display:flex;justify-content:space-between;gap:12px}
+  td.num{text-align:right}
+  td.name{font-size:13px}
+  .search{max-width:none}
+  .toolbar{flex-wrap:wrap}
+  .count{margin-left:0}
+  .floating{bottom:74px}
+  .hint{display:none}
+  .menubar{overflow:auto}
+}
+</style>
+</head>
+<body>
+<div class="window">
+
+  <!-- window title bar -->
+  <div class="titlebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2.5 20 6v5.5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3.5Z" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M8.2 12.1l2.4 2.4 5.2-5.4" stroke="var(--text)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-name">Guardian</span>
+      <span class="brand-scope" data-zh="可视化进程守护" data-en="Process Watch">可视化进程守护</span>
+    </div>
+    <div class="titlebar-right">
+      <div class="live"><span class="live-dot"></span><span data-zh="守护运行中" data-en="Guarding is active">守护运行中</span></div>
+      <div class="winctl">
+        <button class="wc" aria-label="minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.3"/></svg></button>
+        <button class="wc" aria-label="maximize"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button>
+        <button class="wc close" aria-label="close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7-7 7" stroke="currentColor" stroke-width="1.3"/></svg></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- menu bar -->
+  <nav class="menubar" aria-label="main menu">
+    <div class="menu" data-menu>
+      <button data-zh="文件" data-en="File">文件</button>
+      <div class="menu-panel">
+        <button class="menu-item"><span data-zh="添加程序…" data-en="Add program…">添加程序…</span><span class="key">Ctrl+N</span></button>
+        <button class="menu-item"><span data-zh="移除选中" data-en="Remove selected">移除选中</span><span class="key">Del</span></button>
+        <div class="menu-sep"></div>
+        <button class="menu-item"><span data-zh="打开数据目录" data-en="Open data folder">打开数据目录</span></button>
+        <button class="menu-item"><span data-zh="打开日志文件" data-en="Open log file">打开日志文件</span></button>
+        <div class="menu-sep"></div>
+        <button class="menu-item"><span data-zh="最小化到托盘" data-en="Minimize to tray">最小化到托盘</span></button>
+        <button class="menu-item"><span data-zh="退出" data-en="Quit">退出</span><span class="key">Alt+F4</span></button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button data-zh="守护" data-en="Guard">守护</button>
+      <div class="menu-panel">
+        <button class="menu-item"><span data-zh="暂停守护" data-en="Pause guarding">暂停守护</span></button>
+        <button class="menu-item"><span data-zh="重启全部" data-en="Restart all">重启全部</span></button>
+        <div class="menu-sep"></div>
+        <button class="menu-item"><span class="tick"></span><span data-zh="开机自启" data-en="Autostart">开机自启</span></button>
+        <button class="menu-item"><span data-zh="清空崩溃历史" data-en="Clear crash history">清空崩溃历史</span></button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button data-zh="视图" data-en="View">视图</button>
+      <div class="menu-panel">
+        <div class="menu-item submenu"><span data-zh="语言" data-en="Language">语言</span><span class="caret">›</span>
+          <div class="menu-panel">
+            <button class="menu-item" data-set-lang="zh">中文 <span class="tick" data-lang-tick="zh"></span></button>
+            <button class="menu-item" data-set-lang="en">English <span class="tick" data-lang-tick="en" style="visibility:hidden"></span></button>
+          </div>
+        </div>
+        <div class="menu-item submenu"><span data-zh="主题" data-en="Theme">主题</span><span class="caret">›</span>
+          <div class="menu-panel">
+            <button class="menu-item" data-set-theme="dark"><span data-zh="深色" data-en="Dark">深色</span><span class="tick" data-theme-tick="dark"></span></button>
+            <button class="menu-item" data-set-theme="light"><span data-zh="浅色" data-en="Light">浅色</span><span class="tick" data-theme-tick="light" style="visibility:hidden"></span></button>
+          </div>
+        </div>
+        <div class="menu-sep"></div>
+        <button class="menu-item"><span data-zh="最小化到托盘" data-en="Minimize to tray">最小化到托盘</span></button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button data-zh="帮助" data-en="Help">帮助</button>
+      <div class="menu-panel">
+        <button class="menu-item"><span data-zh="关于 Guardian" data-en="About Guardian">关于 Guardian</span></button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- shell -->
+  <div class="shell">
+    <aside class="rail" aria-label="sections">
+      <button class="rail-btn active" title="Overview" aria-label="Overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      </button>
+      <button class="rail-btn" title="Processes" aria-label="Processes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="1.6" fill="var(--ground)"/><circle cx="15" cy="12" r="1.6" fill="var(--ground)"/></svg>
+      </button>
+      <button class="rail-btn" title="History" aria-label="History">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/><path d="M12 8v4l3 2"/></svg>
+      </button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" title="About" aria-label="About">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
+      </button>
+    </aside>
+
+    <main class="canvas">
+      <div class="canvas-inner">
+
+        <!-- title row -->
+        <div class="title-row">
+          <div>
+            <h1 data-zh="概览" data-en="Overview">概览</h1>
+            <p class="subtitle"><span data-zh="5 个守护项中 3 个正在运行 · " data-en="3 of 5 entries are running · ">5 个守护项中 3 个正在运行 · </span><b data-zh="ReportAgent.exe 今日已重启 6 次" data-en="ReportAgent.exe restarted 6 times today">ReportAgent.exe 今日已重启 6 次</b></p>
+          </div>
+          <div class="title-actions">
+            <button class="btn btn-ghost"><span data-zh="全部暂停" data-en="Pause all">全部暂停</span></button>
+            <button class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              <span data-zh="添加程序" data-en="Add program">添加程序</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI strip -->
+        <section class="kpis" aria-label="key figures">
+          <div class="kpi lead">
+            <div class="kpi-label" data-zh="守护中" data-en="Guarding">守护中</div>
+            <div class="kpi-value num">3</div>
+            <div class="kpi-note" data-zh="2 个已停止 / 暂停" data-en="2 stopped or paused">2 个已停止 / 暂停</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" data-zh="守护项总数" data-en="Total entries">守护项总数</div>
+            <div class="kpi-value num">5</div>
+            <div class="kpi-note" data-zh="含 1 个接管进程" data-en="1 adopted process">含 1 个接管进程</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" data-zh="累计重启" data-en="Restarts">累计重启</div>
+            <div class="kpi-value num">12</div>
+            <div class="kpi-note" data-zh="指数退避 1s → 30s" data-en="Backoff 1s → 30s">指数退避 1s → 30s</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" data-zh="崩溃记录" data-en="Crash records">崩溃记录</div>
+            <div class="kpi-value num">12</div>
+            <div class="kpi-note alert" data-zh="4 次集中在 20 分钟内" data-en="4 within 20 minutes">4 次集中在 20 分钟内</div>
+          </div>
+        </section>
+
+        <!-- chart band -->
+        <div class="charts">
+          <section class="chart-card">
+            <div class="card-head">
+              <span class="card-title" data-zh="重启趋势" data-en="Restart trend">重启趋势</span>
+              <span class="card-meta" data-zh="每小时重启次数 · 最近 12 小时" data-en="Restarts per hour · last 12 h">每小时重启次数 · 最近 12 小时</span>
+            </div>
+            <div class="card-body">
+              <div class="chart-legend"><span><i></i><span data-zh="全部守护项" data-en="All entries">全部守护项</span></span></div>
+              <div class="chart-host" id="chartTrend"></div>
+            </div>
+          </section>
+          <section class="chart-card">
+            <div class="card-head">
+              <span class="card-title" data-zh="运行时健康度" data-en="Uptime health">运行时健康度</span>
+              <span class="card-meta" data-zh="最近 24 小时" data-en="Last 24 hours">最近 24 小时</span>
+            </div>
+            <div class="card-body">
+              <div class="ring-row">
+                <div class="chart-host" id="chartRing" style="min-width:130px"></div>
+                <div class="ring-figs">
+                  <div class="ring-fig"><span class="k" data-zh="在线" data-en="Online">在线</span><span class="v ok" data-zh="14h 22m" data-en="14h 22m">14h 22m</span></div>
+                  <div class="ring-fig"><span class="k" data-zh="重启中" data-en="Restarting">重启中</span><span class="v" data-zh="00m 41s" data-en="00m 41s">00m 41s</span></div>
+                  <div class="ring-fig"><span class="k" data-zh="离线" data-en="Offline">离线</span><span class="v" data-zh="08h 57m" data-en="08h 57m">08h 57m</span></div>
+                </div>
+              </div>
+              <p class="finding" data-zh="2 个进程离线时间偏长，LegacyBridge 占其中 8h 57m。" data-en="Two entries were offline for long; LegacyBridge accounts for 8h 57m.">2 个进程离线时间偏长，LegacyBridge 占其中 8h 57m。</p>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid-main">
+          <!-- left: table -->
+          <section class="card">
+            <div class="toolbar">
+              <label class="search-wrap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+                <input class="search" type="search" data-zh-ph="搜索守护项…" data-en-ph="Search entries…" placeholder="搜索守护项…">
+              </label>
+              <div class="tool-sep"></div>
+              <button class="btn btn-ghost" style="height:32px" data-zh="移除选中" data-en="Remove">移除选中</button>
+              <span class="count" data-zh="5 个守护项" data-en="5 entries">5 个守护项</span>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th data-zh="程序" data-en="Program">程序</th>
+                  <th data-zh="状态" data-en="Status">状态</th>
+                  <th class="num" data-zh="PID" data-en="PID">PID</th>
+                  <th class="num" data-zh="重启" data-en="Restarts">重启</th>
+                  <th data-zh="最近退出" data-en="Last exit">最近退出</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="selected">
+                  <td class="name">SyncService.exe</td>
+                  <td><span class="pill run"><span class="d"></span><span data-zh="运行中" data-en="running">运行中</span></span></td>
+                  <td class="num">4821</td>
+                  <td class="num">2</td>
+                  <td class="sub num">—</td>
+                </tr>
+                <tr>
+                  <td class="name">ReportAgent.exe</td>
+                  <td><span class="pill run"><span class="d"></span><span data-zh="运行中" data-en="running">运行中</span></span></td>
+                  <td class="num">1936</td>
+                  <td class="num">6</td>
+                  <td class="sub num">14:51 · <span class="event-code">exit 1</span></td>
+                </tr>
+                <tr>
+                  <td class="name">EdgeWorker.exe</td>
+                  <td><span class="pill run"><span class="d"></span><span data-zh="运行中" data-en="running">运行中</span></span></td>
+                  <td class="num">7743</td>
+                  <td class="num">0</td>
+                  <td class="sub num">—</td>
+                </tr>
+                <tr>
+                  <td class="name">LegacyBridge.exe</td>
+                  <td><span class="pill stop"><span class="d"></span><span data-zh="已停止" data-en="stopped">已停止</span></span></td>
+                  <td class="num">—</td>
+                  <td class="num">3</td>
+                  <td class="sub num">09:12 · <span class="event-code">0xC0000005</span></td>
+                </tr>
+                <tr>
+                  <td class="name">QrScan.exe</td>
+                  <td><span class="pill pause"><span class="d"></span><span data-zh="已暂停" data-en="paused">已暂停</span></span></td>
+                  <td class="num">5510</td>
+                  <td class="num">1</td>
+                  <td class="sub num">11:47 · <span class="event-code">exit 2</span></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="footer-note">
+              <span data-zh="关闭窗口将最小化到托盘，守护继续运行" data-en="Closing the window minimizes to tray; guarding continues">关闭窗口将最小化到托盘，守护继续运行</span>
+              <span class="link" data-zh="查看全部 →" data-en="View all →">查看全部 →</span>
+            </div>
+          </section>
+
+          <!-- right: crash history + signature pulse -->
+          <div style="display:flex;flex-direction:column;gap:var(--gap);min-width:0">
+            <section class="card">
+              <div class="card-head">
+                <span class="card-title" data-zh="重启脉冲" data-en="Restart pulse">重启脉冲</span>
+                <span class="card-meta" data-zh="最近 60 分钟" data-en="Last 60 minutes">最近 60 分钟</span>
+              </div>
+              <div class="card-body">
+                <div class="pulse-legend">
+                  <span><i class="lg-mark"></i><span data-zh="重启事件" data-en="restart event">重启事件</span></span>
+                  <span><i class="lg-mark hot"></i><span data-zh="异常密集" data-en="cluster">异常密集</span></span>
+                </div>
+                <div class="pulse">
+                  <div class="axis"><span>13:50</span><span>14:10</span><span>14:30</span><span>14:50</span></div>
+                  <div class="lane"><span class="lane-name">SyncService</span><div class="track"><div class="track-line"></div><div class="tick" style="left:26%"></div><div class="now" style="left:100%"></div></div></div>
+                  <div class="lane"><span class="lane-name">ReportAgent</span><div class="track"><div class="track-line"></div><div class="tick hot" style="left:62%"></div><div class="tick hot" style="left:69%"></div><div class="tick hot" style="left:76%"></div><div class="tick hot" style="left:83%"></div><div class="now" style="left:100%"></div></div></div>
+                  <div class="lane"><span class="lane-name">EdgeWorker</span><div class="track"><div class="track-line"></div><div class="now" style="left:100%"></div></div></div>
+                  <div class="lane"><span class="lane-name">LegacyBridge</span><div class="track"><div class="track-line"></div><div class="tick" style="left:12%"></div><div class="now" style="left:100%"></div></div></div>
+                  <div class="lane"><span class="lane-name">QrScan</span><div class="track"><div class="track-line"></div><div class="tick" style="left:44%"></div><div class="now" style="left:100%"></div></div></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" style="flex:1">
+              <div class="card-head">
+                <span class="card-title" data-zh="崩溃历史" data-en="Crash history">崩溃历史</span>
+                <span class="card-meta num">12</span>
+              </div>
+              <div class="events">
+                <div class="event">
+                  <div class="event-top"><span class="event-name">ReportAgent.exe</span><span class="event-time">14:51:07</span></div>
+                  <div class="event-detail"><span data-zh="退出码" data-en="exit">退出码</span> <span class="event-code">1</span> · <span data-zh="存活" data-en="uptime">存活</span> 00:02:41 · <span data-zh="第 6 次重启" data-en="restart #6">第 6 次重启</span></div>
+                </div>
+                <div class="event">
+                  <div class="event-top"><span class="event-name">ReportAgent.exe</span><span class="event-time">14:44:22</span></div>
+                  <div class="event-detail"><span data-zh="退出码" data-en="exit">退出码</span> <span class="event-code">1</span> · <span data-zh="存活" data-en="uptime">存活</span> 00:01:58 · <span data-zh="第 5 次重启" data-en="restart #5">第 5 次重启</span></div>
+                </div>
+                <div class="event">
+                  <div class="event-top"><span class="event-name">LegacyBridge.exe</span><span class="event-time">09:12:40</span></div>
+                  <div class="event-detail"><span data-zh="退出码" data-en="exit">退出码</span> <span class="event-code">0xC0000005</span> · <span data-zh="存活" data-en="uptime">存活</span> 03:14:09 · <span data-zh="第 3 次重启" data-en="restart #3">第 3 次重启</span></div>
+                </div>
+                <div class="event">
+                  <div class="event-top"><span class="event-name">QrScan.exe</span><span class="event-time">11:47:03</span></div>
+                  <div class="event-detail"><span data-zh="退出码" data-en="exit">退出码</span> <span class="event-code">2</span> · <span data-zh="存活" data-en="uptime">存活</span> 01:06:12 · <span data-zh="第 1 次重启" data-en="restart #1">第 1 次重启</span></div>
+                </div>
+              </div>
+              <div class="footer-note"><span data-zh="仅显示最近 4 条" data-en="Showing latest 4">仅显示最近 4 条</span><span class="link" data-zh="清空" data-en="Clear">清空</span></div>
+            </section>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- live thing: language + theme -->
+<div class="floating">
+  <button class="chip" id="langChip"><span class="dot"></span><span id="langLabel">中文</span></button>
+  <button class="chip" id="themeChip"><span class="dot" style="background:var(--warning)"></span><span id="themeLabel" data-zh="深色" data-en="Dark">深色</span></button>
+</div>
+<div class="hint" data-zh="点击右下角切换中英文 / 明暗主题 · 点击菜单栏体验菜单" data-en="Use the chips below to switch language / theme · click the menu bar">点击右下角切换中英文 / 明暗主题 · 点击菜单栏体验菜单</div>
+
+<script src="charts.js"></script>
+<script>
+(function(){
+  var root=document.documentElement;
+  function setLang(lang){
+    root.lang=lang;
+    document.querySelectorAll('[data-zh]').forEach(function(el){
+      var v=el.getAttribute('data-'+lang); if(v!=null) el.textContent=v;
+    });
+    document.querySelectorAll('[data-zh-ph]').forEach(function(el){
+      el.placeholder=el.getAttribute('data-'+(lang==='zh'?'zh':'en')+'-ph');
+    });
+    document.getElementById('langLabel').textContent = lang==='zh'?'中文':'English';
+    document.querySelectorAll('[data-lang-tick]').forEach(function(el){
+      el.style.visibility = el.getAttribute('data-lang-tick')===lang?'visible':'hidden';
+    });
+  }
+  function setTheme(theme){
+    root.setAttribute('data-theme',theme);
+    document.querySelectorAll('[data-theme-tick]').forEach(function(el){
+      el.style.visibility = el.getAttribute('data-theme-tick')===theme?'visible':'hidden';
+    });
+    document.getElementById('themeLabel').textContent =
+      theme==='dark'?(root.lang==='zh'?'深色':'Dark'):(root.lang==='zh'?'浅色':'Light');
+  }
+  document.getElementById('langChip').addEventListener('click',function(){
+    setLang(root.lang==='zh'?'en':'zh');
+    setTheme(root.getAttribute('data-theme'));
+  });
+  document.getElementById('themeChip').addEventListener('click',function(){
+    setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark');
+  });
+  document.querySelectorAll('[data-set-lang]').forEach(function(b){
+    b.addEventListener('click',function(e){e.stopPropagation();setLang(b.getAttribute('data-set-lang'));setTheme(root.getAttribute('data-theme'));});
+  });
+  document.querySelectorAll('[data-set-theme]').forEach(function(b){
+    b.addEventListener('click',function(e){e.stopPropagation();setTheme(b.getAttribute('data-set-theme'));});
+  });
+  document.querySelectorAll('[data-menu]').forEach(function(m){
+    var btn=m.querySelector(':scope > button');
+    btn.addEventListener('click',function(e){
+      e.stopPropagation();
+      var was=m.classList.contains('open');
+      document.querySelectorAll('[data-menu]').forEach(function(x){x.classList.remove('open');});
+      if(!was) m.classList.add('open');
+    });
+  });
+  document.addEventListener('click',function(){
+    document.querySelectorAll('[data-menu]').forEach(function(x){x.classList.remove('open');});
+  });
+
+  // ---- charts ----
+  // Sample data reconciles with the KPI strip: the 12 hourly restarts sum to 12.
+  var hours=['03','04','05','06','07','08','09','10','11','12','13','14']; // taste-skill-ignore: clock-hour axis labels, not decorative numbering
+  var restarts=[0,1,0,0,1,0,1,1,0,1,2,5]; // sum = 12
+  console.assert(restarts.reduce(function(a,b){return a+b;},0)===12,'restart trend must total 12');
+  function drawCharts(){
+    if(!window.Charts) return;
+    var zh=root.lang==='zh';
+    var trend=document.getElementById('chartTrend');
+    Charts.line(trend,{
+      labels:hours.map(function(h){return h+':00';}),
+      series:[{name:zh?'重启次数':'Restarts',values:restarts}],
+      height:168,
+      xAt:[0,3,6,9,11],
+      annotations:[{at:11,label:zh?'14 时密集重启 5 次':'5 restarts at 14:00',short:'14:00'}]
+    });
+    var ring=document.getElementById('chartRing');
+    var online=14+22/60, total=24;
+    Charts.ring(ring,{value:online/total,label:'60%',sub:zh?'在线率':'online',size:150,stroke:10,
+      colour:getComputedStyle(ring).getPropertyValue('--positive').trim()||'#44a282'});
+  }
+  setLang('zh'); setTheme('dark'); drawCharts();
+  window.addEventListener('resize',function(){ /* charts.js reflows via its own ResizeObserver */ });
+  document.getElementById('langChip').addEventListener('click',function(){setTimeout(drawCharts,0);});
+  document.getElementById('themeChip').addEventListener('click',function(){setTimeout(drawCharts,0);});
+  document.querySelectorAll('[data-set-lang],[data-set-theme]').forEach(function(b){
+    b.addEventListener('click',function(){setTimeout(drawCharts,0);});
+  });
+})();
+</script>
+</body>
+</html>

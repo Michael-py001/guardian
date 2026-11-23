@@ -2,9 +2,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod engine;
+mod ui;
 mod ui_strings;
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use engine::{CrashEntry, EntryStatus, ProcessConfig, RunningProcess, StatusSink, Watcher};
 use rfd::FileDialog;
 use std::path::PathBuf;
@@ -14,14 +15,11 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 use ui_strings::{Lang, Settings, Theme, strings};
 
-// ---- Design tokens (Minimalism & Swiss Style) ----
-const GREEN: Color32 = Color32::from_rgb(38, 166, 91);
-const RED: Color32 = Color32::from_rgb(220, 70, 70);
-const AMBER: Color32 = Color32::from_rgb(190, 130, 20);
-const BLUE: Color32 = Color32::from_rgb(54, 132, 232);
-const MUTED: Color32 = Color32::from_rgb(120, 126, 136);
-const CARD_LIGHT: Color32 = Color32::from_rgb(246, 248, 250);
-const CARD_DARK: Color32 = Color32::from_rgb(38, 42, 48);
+/// A close request minimizes to tray only for the window's own X button.
+/// Explicit Quit sets `quitting`, so the request is left uncancelled and eframe exits.
+fn should_minimize_to_tray(close_requested: bool, quitting: bool) -> bool {
+    close_requested && !quitting
+}
 
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -63,20 +61,6 @@ fn install_cjk_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn apply_theme(ctx: &egui::Context, theme: Theme) {
-    let mut visuals = match theme {
-        Theme::Light => egui::Visuals::light(),
-        Theme::Dark => egui::Visuals::dark(),
-    };
-    let accent = match theme {
-        Theme::Light => Color32::from_rgb(30, 100, 200),
-        Theme::Dark => Color32::from_rgb(90, 160, 250),
-    };
-    visuals.selection.bg_fill = accent;
-    visuals.hyperlink_color = accent;
-    ctx.set_visuals(visuals);
-}
-
 #[derive(Default)]
 struct AddDialog {
     open: bool,
@@ -116,6 +100,7 @@ struct GuardianApp {
     font_installed: bool,
     about_open: bool,
     search: String,
+    quitting: bool,
 }
 
 impl GuardianApp {
@@ -128,7 +113,7 @@ impl GuardianApp {
             autostart: engine::task_installed(), toast: None,
             last_crash_refresh: std::time::Instant::now(), tray,
             lang: st.lang, theme: st.theme, font_installed: false,
-            about_open: false, search: String::new(),
+            about_open: false, search: String::new(), quitting: false,
         };
         app.load();
         app.spawn_watcher();
@@ -248,6 +233,11 @@ impl GuardianApp {
         }
     }
 
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     fn clear_history(&mut self) {
         let _ = engine::clear_crash_history(&crash_path());
         self.crashes.clear();
@@ -272,7 +262,7 @@ impl GuardianApp {
 
     fn set_theme(&mut self, theme: Theme, ctx: &egui::Context) {
         self.theme = theme;
-        apply_theme(ctx, theme);
+        ui::apply_visuals(ctx, theme);
         self.persist_settings();
     }
 
@@ -284,11 +274,45 @@ impl GuardianApp {
             tray.quit.set_text(s.tray_quit);
         }
     }
+
+    /// Restart counts per hour bucket over the last 12 hours, from real crash history.
+    /// Crash times are "YYYY-MM-DD HH:MM:SS" in local time.
+    fn trend_data(&self) -> (Vec<f32>, Vec<String>) {
+        use chrono::{Local, NaiveDateTime};
+        let now = Local::now().naive_local();
+        let mut counts = vec![0.0f32; 12];
+        for c in &self.crashes {
+            if let Ok(t) = NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S") {
+                let hours_ago = (now - t).num_hours();
+                if hours_ago >= 0 && hours_ago < 12 {
+                    counts[11 - hours_ago as usize] += 1.0;
+                }
+            }
+        }
+        let labels: Vec<String> = (0..12)
+            .map(|i| (now - chrono::Duration::hours((11 - i) as i64)).format("%H:%M").to_string())
+            .collect();
+        (counts, labels)
+    }
+
+    /// Fraction of the last 24h without a crash: online / total. No crashes => 100%.
+    fn health_ratio(&self) -> f32 {
+        use chrono::{Local, NaiveDateTime};
+        let now = Local::now().naive_local();
+        let in_window = self.crashes.iter().filter_map(|c| {
+            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S").ok()
+        }).filter(|t| (now - *t).num_hours() < 24).count();
+        // ponytail: one crash ≈ 2 minutes of downtime; no uptime log exists to be more precise.
+        let downtime_secs = in_window as f32 * 120.0;
+        (86400.0 - downtime_secs.min(86400.0)) / 86400.0
+    }
 }
 
 impl eframe::App for GuardianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.font_installed { install_cjk_font(ctx); self.font_installed = true; }
+        // eframe may re-apply system visuals; keep chrome in sync with our palette every frame.
+        ui::apply_visuals(ctx, self.theme);
 
         // Tray events
         let tray_ids = self.tray.as_ref().map(|t| (t.show.id().clone(), t.autostart.id().clone(), t.quit.id().clone()));
@@ -297,7 +321,7 @@ impl eframe::App for GuardianApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             } else if event.id == auto_id { self.toggle_autostart(); self.update_tray_labels(); }
-            else if event.id == quit_id { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+            else if event.id == quit_id { self.quit(ctx); }
         }
 
         if let Ok(s) = self.sink.lock() { self.statuses = s.clone(); }
@@ -305,12 +329,14 @@ impl eframe::App for GuardianApp {
             self.crashes = engine::read_crash_history(&crash_path());
             self.last_crash_refresh = std::time::Instant::now();
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if should_minimize_to_tray(close_requested, self.quitting) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
         let s = strings(self.lang);
+        let p = ui::palette(self.theme);
 
         // ---- Menu bar ----
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
@@ -325,7 +351,7 @@ impl eframe::App for GuardianApp {
                     if ui.button(s.menu_minimize_tray).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
                     }
-                    if ui.button(s.menu_quit).clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+                    if ui.button(s.menu_quit).clicked() { self.quit(ctx); }
                 });
                 ui.menu_button(s.menu_guard, |ui| {
                     let label = if self.paused { s.menu_resume } else { s.menu_pause };
@@ -362,41 +388,37 @@ impl eframe::App for GuardianApp {
         // ---- Status bar ----
         egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(s.status_bar).size(11.0).color(MUTED));
+                ui.label(egui::RichText::new(s.status_bar).size(11.0).color(p.muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.paused {
-                        ui.label(egui::RichText::new(s.paused).color(AMBER).strong());
+                        ui.label(egui::RichText::new(s.paused).color(p.amber).strong());
                     } else {
-                        ui.label(egui::RichText::new(s.running).color(GREEN).strong());
+                        ui.label(egui::RichText::new(s.running).color(p.green).strong());
                     }
                 });
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // ---- Header + stat cards ----
-            ui.horizontal(|ui| {
-                ui.heading(s.title);
-                ui.add_space(10.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(s.language_label);
-                    if ui.selectable_label(self.lang == Lang::Zh, s.menu_lang_zh).clicked() { self.set_lang(Lang::Zh, ctx); }
-                    if ui.selectable_label(self.lang == Lang::En, s.menu_lang_en).clicked() { self.set_lang(Lang::En, ctx); }
-                });
-            });
-            ui.add_space(8.0);
-
             let running = self.statuses.iter().filter(|x| x.running).count();
             let total_restarts: i64 = self.statuses.iter().map(|x| x.restarts).sum();
-            ui.horizontal(|ui| {
-                stat_card(ui, s.guarding, &running.to_string(), GREEN, self.theme);
-                stat_card(ui, s.total, &self.configs.len().to_string(), BLUE, self.theme);
-                stat_card(ui, s.restarts_total, &total_restarts.to_string(), AMBER, self.theme);
-                stat_card(ui, s.crash_records, &self.crashes.len().to_string(), RED, self.theme);
-            });
-            ui.add_space(10.0);
 
-            // ---- Toolbar ----
+            // Title row
+            ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
+            let running_fmt = s.subtitle_running.replace("{}", &running.to_string()).replacen("{}", &self.configs.len().to_string(), 1);
+            ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
+            ui.add_space(12.0);
+
+            // KPI strip: one container, hairline dividers
+            ui::stat_strip(ui, self.theme, &[
+                (s.guarding, &running.to_string(), p.green),
+                (s.total, &self.configs.len().to_string(), p.accent),
+                (s.restarts_total, &total_restarts.to_string(), p.amber),
+                (s.crash_records, &self.crashes.len().to_string(), p.red),
+            ]);
+            ui.add_space(12.0);
+
+            // Toolbar
             ui.horizontal(|ui| {
                 if ui.button(s.add_button).clicked() { self.add.open = true; self.add.processes_loaded = false; }
                 if ui.button(s.remove_button).clicked() { self.remove_selected(); }
@@ -408,57 +430,128 @@ impl eframe::App for GuardianApp {
                 ui.add_space(6.0);
                 ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(s.search_hint).desired_width(150.0));
             });
-
             if let Some(toast) = &self.toast {
                 ui.add_space(4.0);
-                ui.colored_label(AMBER, toast);
+                ui.label(egui::RichText::new(toast).color(p.amber));
             }
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(10.0);
 
+            // Chart band: trend + health ring. Side by side when wide, stacked when narrow.
+            let (trend_values, trend_labels) = self.trend_data();
+            let health = self.health_ratio();
+            let trend_card = |ui: &mut egui::Ui| {
+                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.chart_restart_trend).size(14.0).strong().color(p.ink));
+                        ui.label(egui::RichText::new(s.chart_trend_meta).size(11.0).color(p.muted));
+                        ui.add_space(6.0);
+                        ui::line_chart(ui, self.theme, &trend_values, &trend_labels);
+                    });
+            };
+            let health_card = |ui: &mut egui::Ui| {
+                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.chart_uptime).size(14.0).strong().color(p.ink));
+                        ui.label(egui::RichText::new(s.chart_uptime_meta).size(11.0).color(p.muted));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui::ring_chart(ui, self.theme, health);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(s.label_online).size(12.0).color(p.muted));
+                                ui.label(egui::RichText::new(s.label_restarting).size(12.0).color(p.muted));
+                                ui.label(egui::RichText::new(s.label_offline).size(12.0).color(p.muted));
+                            });
+                        });
+                    });
+            };
+            let wide = ui.available_width() >= 720.0;
+            if wide {
+                let half = (ui.available_width() - 10.0) / 2.0;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(egui::vec2(half, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(half - 8.0);
+                        trend_card(ui);
+                    });
+                    ui.add_space(10.0);
+                    ui.allocate_ui_with_layout(egui::vec2(half, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(half - 8.0);
+                        health_card(ui);
+                    });
+                });
+            } else {
+                trend_card(ui);
+                ui.add_space(10.0);
+                health_card(ui);
+            }
+            ui.add_space(12.0);
+
+            // Guarded processes table
             let filter = self.search.to_lowercase();
             let visible: Vec<usize> = (0..self.configs.len()).filter(|&i| {
                 filter.is_empty() || self.configs[i].name.to_lowercase().contains(&filter)
             }).collect();
 
             if self.configs.is_empty() {
-                ui.add_space(40.0);
+                ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(s.empty_title).size(18.0).color(MUTED));
+                    ui.label(egui::RichText::new(s.empty_title).size(18.0).color(p.muted));
                     ui.add_space(8.0);
                     ui.label(s.empty_line1);
                     ui.label(s.empty_line2);
                 });
             } else if visible.is_empty() {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| { ui.label(egui::RichText::new(s.no_crashes).color(MUTED)); });
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| { ui.label(egui::RichText::new(s.no_crashes).color(p.muted)); });
             } else {
-                egui::Grid::new("entries").num_columns(5).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
-                    ui.strong(s.col_name); ui.strong(s.col_status); ui.strong(s.col_pid);
-                    ui.strong(s.col_restarts); ui.strong(s.col_last_exit); ui.end_row();
-                    for idx in visible {
-                        let cfg = &self.configs[idx];
-                        let status = self.statuses.get(idx);
-                        if ui.selectable_label(self.selected == Some(idx), &cfg.name).clicked() { self.selected = Some(idx); }
-                        let running = status.map(|x| x.running).unwrap_or(false);
-                        ui.colored_label(if running { GREEN } else { RED },
-                            if running { s.running } else { s.stopped });
-                        ui.label(status.and_then(|x| x.pid).map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
-                        ui.label(status.map(|x| x.restarts.to_string()).unwrap_or_else(|| "0".into()));
-                        ui.label(status.and_then(|x| x.last_exit.clone()).unwrap_or_else(|| "-".into()));
+                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 8.0)).show(ui, |ui| {
+                    egui::Grid::new("entries").num_columns(5).striped(false).spacing([16.0, 6.0]).show(ui, |ui| {
+                        for h in [s.col_name, s.col_status, s.col_pid, s.col_restarts, s.col_last_exit] {
+                            ui.label(egui::RichText::new(h).size(11.0).color(p.muted));
+                        }
                         ui.end_row();
-                    }
+                        for idx in visible {
+                            let cfg = &self.configs[idx];
+                            let status = self.statuses.get(idx);
+                            if ui.selectable_label(self.selected == Some(idx), &cfg.name).clicked() { self.selected = Some(idx); }
+                            let is_running = status.map(|x| x.running).unwrap_or(false);
+                            let (label, color) = if self.paused {
+                                (s.paused, p.amber)
+                            } else if is_running {
+                                (s.running, p.green)
+                            } else {
+                                (s.stopped, p.red)
+                            };
+                            ui.horizontal(|ui| {
+                                ui.painter().circle_filled(ui.cursor().min + egui::vec2(3.0, 8.0), 3.0, color);
+                                ui.add_space(10.0);
+                                ui.label(egui::RichText::new(label).size(12.0).color(color));
+                            });
+                            ui.label(status.and_then(|x| x.pid).map(|v| v.to_string()).unwrap_or_else(|| "-".into()));
+                            ui.label(status.map(|x| x.restarts.to_string()).unwrap_or_else(|| "0".into()));
+                            ui.label(status.and_then(|x| x.last_exit.clone()).unwrap_or_else(|| "-".into()));
+                            ui.end_row();
+                        }
+                    });
                 });
 
-                ui.add_space(8.0);
-                ui.collapsing(s.crash_history, |ui| {
-                    ui.label(format!("{} {} {}", self.crashes.len(), s.total, s.crash_count));
-                    for c in self.crashes.iter().rev().take(20) {
-                        ui.label(s.crash_line
-                            .replace("{t}", &c.time).replace("{p}", &c.process)
-                            .replace("{pid}", &c.pid.to_string()).replace("{code}", &c.exit_code)
-                            .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string()));
+                ui.add_space(10.0);
+                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.crash_history).size(14.0).strong().color(p.ink));
+                        ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(11.0).color(p.muted));
+                    });
+                    if self.crashes.is_empty() {
+                        ui.label(egui::RichText::new(s.no_crashes).size(12.0).color(p.muted));
+                    } else {
+                        for c in self.crashes.iter().rev().take(6) {
+                            ui.label(egui::RichText::new(s.crash_line
+                                .replace("{t}", &c.time).replace("{p}", &c.process)
+                                .replace("{pid}", &c.pid.to_string()).replace("{code}", &c.exit_code)
+                                .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string())
+                            ).size(11.0).color(p.muted));
+                        }
                     }
                 });
             }
@@ -531,16 +624,6 @@ impl eframe::App for GuardianApp {
     }
 }
 
-fn stat_card(ui: &mut egui::Ui, label: &str, value: &str, color: Color32, theme: Theme) {
-    let bg = match theme { Theme::Light => CARD_LIGHT, Theme::Dark => CARD_DARK };
-    egui::Frame::NONE.fill(bg).corner_radius(6.0).inner_margin(egui::vec2(10.0, 6.0)).show(ui, |ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).size(11.0).color(MUTED));
-            ui.label(egui::RichText::new(value).size(20.0).strong().color(color));
-        });
-    });
-}
-
 fn make_tray_icon() -> tray_icon::Icon {
     let size = 32u32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
@@ -569,16 +652,29 @@ fn main() -> eframe::Result<()> {
     let st = load_settings();
     let title = strings(st.lang).app_title;
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([880.0, 600.0]).with_title(title),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1120.0, 760.0]).with_title(title),
         ..Default::default()
     };
     eframe::run_native("Guardian", options, Box::new(move |cc| {
         // Apply saved theme + CJK font before first frame.
         install_cjk_font(&cc.egui_ctx);
-        apply_theme(&cc.egui_ctx, st.theme);
+        ui::apply_visuals(&cc.egui_ctx, st.theme);
         let tray = build_tray(st.lang);
         let mut app = GuardianApp::new(tray);
         app.font_installed = true;
         Ok(Box::new(app))
     }))
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::should_minimize_to_tray;
+
+    #[test]
+    fn only_window_close_minimizes_to_tray() {
+        assert!(should_minimize_to_tray(true, false));  // X button -> tray
+        assert!(!should_minimize_to_tray(true, true));  // tray/menu Quit -> exit
+        assert!(!should_minimize_to_tray(false, false)); // no request -> nothing
+        assert!(!should_minimize_to_tray(false, true));  // quitting set, no request yet
+    }
 }
