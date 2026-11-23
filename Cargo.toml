@@ -1,0 +1,20 @@
+[package]
+name = "guardian"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny, config-driven process guardian that restarts crashed processes."
+license = "MIT"
+repository = "https://github.com/yourname/guardian"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

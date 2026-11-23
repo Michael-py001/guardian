@@ -1,0 +1,29 @@
+# Guardian configuration — copy to guardian.toml and edit.
+# Each [[process]] block is one process to launch and keep alive.
+
+[[process]]
+name = "baocode"
+command = "C:\\Program Files\\BaoCode\\baocode.exe"
+# args = ["--some-flag"]
+# cwd = "C:\\Program Files\\BaoCode"
+
+# [env]
+# SOME_VAR = "value"
+
+# Retry backoff (milliseconds). Starts at restart_delay_ms, doubles each
+# consecutive fast death up to max_restart_delay_ms. Resets once the process
+# survives healthy_uptime_secs.
+restart_delay_ms = 1000
+max_restart_delay_ms = 30000
+backoff_factor = 2.0
+
+# -1 = restart forever. 0 = never restart. N = give up after N fast restarts.
+max_restarts = -1
+
+# How long a process must stay alive to be considered healthy (resets backoff).
+healthy_uptime_secs = 60
+
+# Add more blocks to watch more processes.
+# [[process]]
+# name = "another-app"
+# command = "C:\\path\\to\\app.exe"
