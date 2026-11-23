@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A tiny, config-driven process guardian that restarts crashed processes."
 license = "MIT"
-repository = "https://github.com/yourname/guardian"
+repository = "https://github.com/Michael-py001/guardian"
 
 [dependencies]
 anyhow = "1"
