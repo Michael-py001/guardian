@@ -64,6 +64,7 @@ pub struct Str {
     pub chart_trend_meta: &'static str,
     pub chart_uptime: &'static str,
     pub chart_uptime_meta: &'static str,
+    pub health_finding: &'static str, // template: "{name} restarted {n} times today"
     pub label_online: &'static str,
     pub label_crashes_24h: &'static str,
     pub label_offline: &'static str,
@@ -191,6 +192,7 @@ static ZH: Str = Str {
     chart_trend_meta: "重启次数 · 最近 12 小时",
     chart_uptime: "运行时健康度",
     chart_uptime_meta: "最近 24 小时",
+    health_finding: "{} 今日重启 {} 次，是最不稳定的守护项。",
     label_online: "在线",
     label_crashes_24h: "24h 崩溃",
     label_offline: "离线",
@@ -306,6 +308,7 @@ static EN: Str = Str {
     chart_trend_meta: "Restarts · last 12 hours",
     chart_uptime: "Uptime health",
     chart_uptime_meta: "Last 24 hours",
+    health_finding: "{} restarted {} times today — the least stable entry.",
     label_online: "Online",
     label_crashes_24h: "Crashes 24h",
     label_offline: "Offline",

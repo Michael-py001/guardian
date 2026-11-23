@@ -145,6 +145,21 @@ pub fn line_chart(ui: &mut Ui, theme: Theme, values: &[f32], labels: &[String]) 
             })
             .collect();
         paint.line(points, Stroke::new(2.0_f32, p.accent));
+
+        // Annotate the busiest bucket, matching the prototype's "peak hour" callout.
+        if let Some(peak) = values.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
+            if *peak.1 > 0.0 {
+                let px = plot.left() + step * peak.0 as f32;
+                let py = plot.bottom() - (*peak.1 / top) * plot.height();
+                paint.text(
+                    egui::pos2(px, py - 8.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    format!("{:.0}", peak.1),
+                    egui::FontId::proportional(11.0),
+                    p.accent,
+                );
+            }
+        }
     }
 
     // x labels: first, middle, last only — one step, never rotated.
@@ -200,18 +215,33 @@ pub fn ring_chart(ui: &mut Ui, theme: Theme, ratio: f32) {
 
 /// Restart pulse: one lane per process, restart events as ticks on a 60-minute axis.
 /// `lanes` is (name, minutes-ago of each restart in the last hour), newest last.
-pub fn pulse_chart(ui: &mut Ui, theme: Theme, lanes: &[(String, Vec<f32>)]) {
+/// `axis` holds four evenly spaced clock labels, oldest first, last is "now".
+pub fn pulse_chart(ui: &mut Ui, theme: Theme, lanes: &[(String, Vec<f32>)], axis: &[String; 4]) {
     let p = palette(theme);
     let row_h = 22.0;
     let label_w = 96.0;
-    let height = (lanes.len() as f32 * row_h).max(row_h) + 14.0;
+    let height = (lanes.len() as f32 * row_h).max(row_h) + 28.0;
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height), egui::Sense::hover());
     let paint = ui.painter();
     let track = egui::Rect::from_min_max(
         egui::pos2(rect.left() + label_w, rect.top()),
-        egui::pos2(rect.right() - 4.0, rect.bottom() - 12.0),
+        egui::pos2(rect.right() - 4.0, rect.bottom() - 20.0),
     );
+    // Time axis under the lanes: oldest .. now, evenly spaced.
+    for (i, label) in axis.iter().enumerate() {
+        let t = i as f32 / 3.0;
+        let x = track.left() + t * track.width();
+        paint.text(
+            egui::pos2(x, rect.bottom() - 8.0),
+            if i == 0 { egui::Align2::LEFT_BOTTOM }
+            else if i == 3 { egui::Align2::RIGHT_BOTTOM }
+            else { egui::Align2::CENTER_BOTTOM },
+            label,
+            egui::FontId::proportional(9.0),
+            p.muted,
+        );
+    }
     for (i, (name, events)) in lanes.iter().enumerate() {
         let cy = rect.top() + i as f32 * row_h + row_h / 2.0;
         paint.text(egui::pos2(rect.left(), cy), egui::Align2::LEFT_CENTER,

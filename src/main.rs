@@ -26,6 +26,13 @@ fn fill2(template: &str, first: &str, second: &str) -> String {
     template.replacen("{}", first, 1).replacen("{}", second, 1)
 }
 
+/// Four clock labels for the restart-pulse axis: 60, 40, 20 minutes ago, now.
+fn pulse_axis_labels() -> [String; 4] {
+    use chrono::{Local, Duration};
+    let now = Local::now();
+    [60, 40, 20, 0].map(|m| (now - Duration::minutes(m)).format("%H:%M").to_string())
+}
+
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -689,14 +696,27 @@ impl eframe::App for GuardianApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
             let running = self.statuses.iter().filter(|x| x.running).count();
             let total_restarts: i64 = self.statuses.iter().map(|x| x.restarts).sum();
-            ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
-            let running_fmt = fill2(s.subtitle_running, &running.to_string(), &self.configs.len().to_string());
+            // Title row: heading + finding + prominent actions (matches prototype).
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
-                if let Some((name, n)) = self.top_crasher_today() {
-                    let finding = fill2(s.subtitle_finding, &name, &n.to_string());
-                    ui.label(egui::RichText::new(finding).size(12.0).color(p.amber).strong());
-                }
+                ui.vertical(|ui| {
+                    ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
+                    let running_fmt = fill2(s.subtitle_running, &running.to_string(), &self.configs.len().to_string());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
+                        if let Some((name, n)) = self.top_crasher_today() {
+                            let finding = fill2(s.subtitle_finding, &name, &n.to_string());
+                            ui.label(egui::RichText::new(finding).size(12.0).color(p.amber).strong());
+                        }
+                    });
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                    if ui.button(egui::RichText::new(s.add_button).size(12.0)).clicked() {
+                        self.add.open = true;
+                        self.add.processes_loaded = false;
+                    }
+                    let pause_label = if self.paused { s.resume_button } else { s.pause_button };
+                    if ui.button(egui::RichText::new(pause_label).size(12.0)).clicked() { self.toggle_pause(); }
+                });
             });
             ui.add_space(12.0);
 
@@ -767,6 +787,11 @@ impl eframe::App for GuardianApp {
                                 });
                             });
                         });
+                        if let Some((name, n)) = self.top_crasher_today() {
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(fill2(s.health_finding, &name, &n.to_string()))
+                                .size(11.0).color(p.muted));
+                        }
                     });
             };
             let wide = ui.available_width() >= 720.0;
@@ -809,7 +834,8 @@ impl eframe::App for GuardianApp {
                         ui.add_space(14.0);
                         ui.label(egui::RichText::new(s.pulse_cluster).size(10.0).color(p.muted));
                     });
-                    ui::pulse_chart(ui, self.theme, &pulse);
+                    let pulse_axis = pulse_axis_labels();
+                    ui::pulse_chart(ui, self.theme, &pulse, &pulse_axis);
                 });
             ui.add_space(12.0);
 
