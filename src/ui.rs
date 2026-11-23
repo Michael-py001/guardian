@@ -71,29 +71,31 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
     ctx.set_visuals(visuals);
 }
 
-/// One container split by hairlines: a row of KPI cells.
-pub fn stat_strip(ui: &mut Ui, theme: Theme, cells: &[(&str, &str, Color32)]) {
+/// One container split by hairlines: a row of KPI cells, each with a small note.
+pub fn stat_strip(ui: &mut Ui, theme: Theme, cells: &[(&str, &str, &str, Color32)]) {
     let p = palette(theme);
-    let height = 56.0;
+    let height = 72.0;
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height), egui::Sense::hover());
     let paint = ui.painter();
     paint.rect_filled(rect, 6.0, p.surface);
     paint.rect_stroke(rect, 6.0, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
     let col = rect.width() / cells.len() as f32;
-    for (i, (label, value, color)) in cells.iter().enumerate() {
+    for (i, (label, value, note, color)) in cells.iter().enumerate() {
         let x = rect.left() + col * i as f32 + 12.0;
         if i > 0 {
             let dx = rect.left() + col * i as f32;
             paint.line_segment(
-                [egui::pos2(dx, rect.top() + 10.0), egui::pos2(dx, rect.bottom() - 10.0)],
+                [egui::pos2(dx, rect.top() + 12.0), egui::pos2(dx, rect.bottom() - 12.0)],
                 Stroke::new(1.0_f32, p.border),
             );
         }
-        paint.text(egui::pos2(x, rect.top() + 14.0), egui::Align2::LEFT_TOP,
+        paint.text(egui::pos2(x, rect.top() + 12.0), egui::Align2::LEFT_TOP,
             *label, egui::FontId::proportional(11.0), p.muted);
-        paint.text(egui::pos2(x, rect.top() + 24.0), egui::Align2::LEFT_TOP,
+        paint.text(egui::pos2(x, rect.top() + 26.0), egui::Align2::LEFT_TOP,
             *value, egui::FontId::proportional(20.0), *color);
+        paint.text(egui::pos2(x, rect.top() + 54.0), egui::Align2::LEFT_TOP,
+            *note, egui::FontId::proportional(10.0), p.muted);
     }
 }
 

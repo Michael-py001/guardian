@@ -476,6 +476,22 @@ impl GuardianApp {
         }).count();
         (running, stopped, crashes)
     }
+
+    /// Guard entries adopted from an already-running process.
+    fn adopted_count(&self) -> usize {
+        self.configs.iter().filter(|c| c.adopt.is_some()).count()
+    }
+
+    /// Crashes in the last 20 minutes — the "cluster" KPI note.
+    fn crash_cluster_count(&self) -> usize {
+        use chrono::{Local, NaiveDateTime};
+        let now = Local::now().naive_local();
+        self.crashes.iter().filter(|c| {
+            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S")
+                .map(|t| { let m = (now - t).num_seconds() / 60; m >= 0 && m <= 20 })
+                .unwrap_or(false)
+        }).count()
+    }
 }
 
 impl eframe::App for GuardianApp {
@@ -535,6 +551,13 @@ impl eframe::App for GuardianApp {
                     if btn(ui, "─", s.menu_minimize_tray) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
+                    ui.add_space(10.0);
+                    let dot = if self.paused { p.amber } else { p.green };
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                        ui.painter().circle_filled(r.center(), 3.5, dot);
+                        ui.label(egui::RichText::new(s.live_active).size(11.0).color(p.muted));
+                    });
                 });
             });
         });
@@ -634,10 +657,11 @@ impl eframe::App for GuardianApp {
                 View::Overview => {}
             }
 
+            // The dashboard is taller than the window; scroll so the table and
+            // crash history are reachable even at 620px height.
+            egui::ScrollArea::vertical().show(ui, |ui| {
             let running = self.statuses.iter().filter(|x| x.running).count();
             let total_restarts: i64 = self.statuses.iter().map(|x| x.restarts).sum();
-
-            // Title row
             ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
             let running_fmt = fill2(s.subtitle_running, &running.to_string(), &self.configs.len().to_string());
             ui.horizontal(|ui| {
@@ -649,12 +673,16 @@ impl eframe::App for GuardianApp {
             });
             ui.add_space(12.0);
 
-            // KPI strip: one container, hairline dividers
+            // KPI strip: one container, hairline dividers. Notes are real counters (ponytail: no fabricated "14h 22m").
+            let stopped = self.configs.len().saturating_sub(running);
+            let note_stopped = s.note_stopped.replace("{}", &stopped.to_string());
+            let note_adopted = s.note_adopted.replace("{}", &self.adopted_count().to_string());
+            let note_cluster = s.note_crash_cluster.replace("{}", &self.crash_cluster_count().to_string());
             ui::stat_strip(ui, self.theme, &[
-                (s.guarding, &running.to_string(), p.green),
-                (s.total, &self.configs.len().to_string(), p.accent),
-                (s.restarts_total, &total_restarts.to_string(), p.amber),
-                (s.crash_records, &self.crashes.len().to_string(), p.red),
+                (s.guarding, &running.to_string(), &note_stopped, p.green),
+                (s.total, &self.configs.len().to_string(), &note_adopted, p.accent),
+                (s.restarts_total, &total_restarts.to_string(), s.note_backoff, p.amber),
+                (s.crash_records, &self.crashes.len().to_string(), &note_cluster, p.red),
             ]);
             ui.add_space(12.0);
 
@@ -825,10 +853,17 @@ impl eframe::App for GuardianApp {
                                 .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string())
                             ).size(11.0).color(p.muted));
                         }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new(s.view_all).size(11.0).color(p.accent)).frame(false)).clicked() {
+                                self.view = View::History;
+                            }
+                        });
                     }
                 });
             }
-        });
+            }); // ScrollArea
+        }); // CentralPanel
 
         // ---- Add dialog ----
         if self.add.open {

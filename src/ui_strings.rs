@@ -52,6 +52,12 @@ pub struct Str {
     pub total: &'static str,
     pub restarts_total: &'static str,
     pub crash_records: &'static str,
+    pub note_stopped: &'static str,       // template: "{} stopped or paused"
+    pub note_adopted: &'static str,       // template: "{} adopted process(es)"
+    pub note_backoff: &'static str,
+    pub note_crash_cluster: &'static str, // template: "{} within 20 minutes"
+    pub live_active: &'static str,
+    pub view_all: &'static str,
     pub subtitle_running: &'static str, // template: "3 of 5 entries are running"
     pub subtitle_finding: &'static str, // template: "{name} restarted {n} times"
     pub chart_restart_trend: &'static str,
@@ -173,6 +179,12 @@ static ZH: Str = Str {
     total: "总计",
     restarts_total: "累计重启",
     crash_records: "崩溃记录",
+    note_stopped: "{} 个已停止 / 暂停",
+    note_adopted: "含 {} 个接管进程",
+    note_backoff: "指数退避 1s → 30s",
+    note_crash_cluster: "{} 次集中在 20 分钟内",
+    live_active: "守护运行中",
+    view_all: "查看全部 →",
     subtitle_running: "{} 个正在运行 / 共 {} 个守护项",
     subtitle_finding: "{} 今日重启 {} 次",
     chart_restart_trend: "重启趋势",
@@ -282,6 +294,12 @@ static EN: Str = Str {
     total: "Total",
     restarts_total: "Restarts",
     crash_records: "Crashes",
+    note_stopped: "{} stopped or paused",
+    note_adopted: "{} adopted process(es)",
+    note_backoff: "Exponential backoff 1s -> 30s",
+    note_crash_cluster: "{} within 20 minutes",
+    live_active: "Guarding is active",
+    view_all: "View all →",
     subtitle_running: "{} of {} entries are running",
     subtitle_finding: "{} restarted {} times today",
     chart_restart_trend: "Restart trend",
