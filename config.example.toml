@@ -1,5 +1,6 @@
-# Guardian configuration — copy to guardian.toml and edit.
+# Guardian configuration — normally written by the GUI, not by hand.
 # Each [[process]] block is one process to launch and keep alive.
+# Keep this file next to guardian.exe (the app saves guardian.toml there).
 
 [[process]]
 name = "my-app"

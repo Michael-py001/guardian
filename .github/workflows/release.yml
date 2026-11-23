@@ -24,9 +24,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/guardian.exe dist/
-          Copy-Item config.example.toml dist/guardian.toml
           Copy-Item README.md dist/
           Copy-Item LICENSE dist/
+          Copy-Item config.example.toml dist/
+          # No default guardian.toml: the GUI starts empty; users add entries there.
           Compress-Archive -Path dist/* -DestinationPath guardian-windows-x86_64.zip
       - name: Upload Release asset
         uses: softprops/action-gh-release@v2
