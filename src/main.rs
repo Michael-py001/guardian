@@ -1259,6 +1259,11 @@ impl eframe::App for GuardianApp {
                 .collapsible(false).resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .open(&mut open).show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.about_version).size(11.0).color(p.muted));
+                        ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).size(11.0).strong().color(p.ink));
+                    });
+                    ui.add_space(6.0);
                     ui.label(s.about_body);
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
