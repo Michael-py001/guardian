@@ -663,10 +663,22 @@ impl eframe::App for GuardianApp {
 
         // ---- Menu bar ----
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
+            // Menu row with a right-aligned key hint, like the prototype's `.key` span.
+            let menu_item = |ui: &mut egui::Ui, label: &str, hint: &str| {
+                let mut clicked = false;
+                ui.horizontal(|ui| {
+                    clicked = ui.button(label).clicked();
+                    if !hint.is_empty() {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new(hint).size(11.0).color(p.muted));
+                    }
+                });
+                clicked
+            };
             egui::menu::bar(ui, |ui| {
                 ui.menu_button(s.menu_file, |ui| {
-                    if ui.button(s.menu_add).clicked() { self.add.open = true; self.add.processes_loaded = false; ui.close_menu(); }
-                    if ui.button(s.menu_remove).clicked() { self.remove_selected(); ui.close_menu(); }
+                    if menu_item(ui, s.menu_add, "Ctrl+N") { self.add.open = true; self.add.processes_loaded = false; ui.close_menu(); }
+                    if menu_item(ui, s.menu_remove, "Del") { self.remove_selected(); ui.close_menu(); }
                     ui.separator();
                     if ui.button(s.menu_open_folder).clicked() { self.open_folder(); ui.close_menu(); }
                     if ui.button(s.menu_open_log).clicked() { self.open_log(); ui.close_menu(); }
@@ -674,7 +686,7 @@ impl eframe::App for GuardianApp {
                     if ui.button(s.menu_minimize_tray).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
                     }
-                    if ui.button(s.menu_quit).clicked() { self.quit(ctx); }
+                    if menu_item(ui, s.menu_quit, "Alt+F4") { self.quit(ctx); }
                 });
                 ui.menu_button(s.menu_guard, |ui| {
                     let label = if self.paused { s.menu_resume } else { s.menu_pause };
