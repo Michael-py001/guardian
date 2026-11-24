@@ -117,6 +117,7 @@ struct GuardianApp {
     selected: Option<usize>,
     add: AddDialog,
     watcher_stop: Option<Arc<AtomicBool>>,
+    config_tx: Option<engine::ConfigSender>,
     pause_handle: Option<Arc<AtomicBool>>,
     paused: bool,
     autostart: bool,
@@ -140,7 +141,7 @@ impl GuardianApp {
         let mut app = Self {
             configs: Vec::new(), statuses: Vec::new(), crashes: Vec::new(),
             sink: Arc::new(Mutex::new(Vec::new())), selected: None, add: AddDialog::default(),
-            watcher_stop: None, pause_handle: None, paused: false,
+            watcher_stop: None, config_tx: None, pause_handle: None, paused: false,
             autostart: engine::task_installed(), toast: None,
             last_crash_refresh: std::time::Instant::now(),
             last_config_check: std::time::Instant::now(),
@@ -194,7 +195,7 @@ impl GuardianApp {
             }
         }
         self.selected = None;
-        self.spawn_watcher();
+        self.apply_config();
         self.toast = Some(strings(self.lang).toast_config_reloaded.to_string());
     }
 
@@ -206,13 +207,24 @@ impl GuardianApp {
         if let Some(stop) = &self.watcher_stop { stop.store(true, Ordering::SeqCst); }
         let _ = engine::init_logs(&log_path(), &crash_path());
         let config = engine::Config { process: self.configs.clone() };
-        let mut watcher = Watcher::new(&config, self.sink.clone());
+        let (mut watcher, tx) = Watcher::new(&config, self.sink.clone());
         self.watcher_stop = Some(watcher.stop_handle());
+        self.config_tx = Some(tx);
         self.pause_handle = Some(watcher.pause_handle());
         if self.paused {
             if let Some(h) = &self.pause_handle { h.store(true, Ordering::SeqCst); }
         }
         std::thread::spawn(move || watcher.run());
+    }
+
+    /// Push the current config to the running watcher without killing healthy
+    /// processes. Falls back to a full restart only when no watcher is alive.
+    fn apply_config(&mut self) {
+        let config = engine::Config { process: self.configs.clone() };
+        match &self.config_tx {
+            Some(tx) if tx.send(config).is_ok() => {}
+            _ => self.spawn_watcher(),
+        }
     }
 
     fn add_from_file(&mut self) {
@@ -231,7 +243,7 @@ impl GuardianApp {
         self.configs.push(cfg);
         self.add.open = false;
         self.add.name.clear(); self.add.command.clear(); self.add.args.clear();
-        self.persist(); self.spawn_watcher();
+        self.persist(); self.apply_config();
         self.toast = Some(st.toast_added.to_string());
     }
 
@@ -251,7 +263,7 @@ impl GuardianApp {
         }
         self.configs.push(cfg);
         self.add.open = false; self.add.selected = None;
-        self.persist(); self.spawn_watcher();
+        self.persist(); self.apply_config();
         self.toast = Some(st.toast_adopted.to_string());
     }
 
@@ -259,7 +271,7 @@ impl GuardianApp {
         if let Some(idx) = self.selected {
             if idx < self.configs.len() { self.configs.remove(idx); }
             self.selected = None;
-            self.persist(); self.spawn_watcher();
+            self.persist(); self.apply_config();
             self.toast = Some(strings(self.lang).toast_removed.to_string());
         }
     }

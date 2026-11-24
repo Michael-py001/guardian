@@ -542,16 +542,22 @@ pub struct Watcher {
     sink: StatusSink,
     stop: Arc<AtomicBool>,
     pause: Arc<AtomicBool>,
+    config_rx: std::sync::mpsc::Receiver<Config>,
 }
 
+/// Send a fresh config to a running watcher so it can add/remove entries in place.
+pub type ConfigSender = std::sync::mpsc::Sender<Config>;
+
 impl Watcher {
-    pub fn new(config: &Config, sink: StatusSink) -> Self {
-        Self {
+    pub fn new(config: &Config, sink: StatusSink) -> (Self, ConfigSender) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Self {
             runtimes: config.process.iter().cloned().map(Runtime::new).collect(),
             sink,
             stop: Arc::new(AtomicBool::new(false)),
             pause: Arc::new(AtomicBool::new(false)),
-        }
+            config_rx: rx,
+        }, tx)
     }
 
     /// A handle that can stop this watcher from another thread.
@@ -576,6 +582,10 @@ impl Watcher {
     pub fn run(&mut self) {
         let poll = Duration::from_millis(POLL_INTERVAL_MS);
         while !self.stop.load(Ordering::SeqCst) && !SHUTDOWN.load(Ordering::SeqCst) {
+            // Apply config updates in place so untouched processes keep running.
+            while let Ok(config) = self.config_rx.try_recv() {
+                self.apply_config(&config);
+            }
             if self.pause.load(Ordering::SeqCst) {
                 // While paused, still detect exits but do not auto-restart.
                 for rt in self.runtimes.iter_mut() {
@@ -613,6 +623,36 @@ impl Watcher {
         }
         self.terminate_all();
         self.publish_statuses();
+    }
+
+    /// Reconcile the running entries against a new config. Entries whose command
+    /// and name are unchanged keep their live process; only added/removed/changed
+    /// ones are started or stopped.
+    fn apply_config(&mut self, config: &Config) {
+        // Terminate and drop entries no longer present, or whose identity changed.
+        self.runtimes.retain_mut(|rt| {
+            let still_wanted = config.process.iter().any(|c| {
+                c.name == rt.cfg.name && c.command == rt.cfg.command
+            });
+            if still_wanted { return true; }
+            if let Some(mut child) = rt.child.take() {
+                let pid = child.pid();
+                child.terminate();
+                log(&format!("[{}] removed from guarding (pid {} terminated)", rt.cfg.name, pid));
+            }
+            false
+        });
+
+        // Add new entries not already watched. Untouched runtimes keep their live process.
+        for c in &config.process {
+            let exists = self.runtimes.iter().any(|rt| {
+                rt.cfg.name == c.name && rt.cfg.command == c.command
+            });
+            if !exists {
+                log(&format!("[{}] added to guarding", c.name));
+                self.runtimes.push(Runtime::new(c.clone()));
+            }
+        }
     }
 
     fn terminate_all(&mut self) {
@@ -709,6 +749,26 @@ mod tests {
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.process[0].name, "app");
+    }
+
+    #[test]
+    fn apply_config_preserves_unchanged_entries() {
+        let a = ProcessConfig::new("a".into(), "a.exe".into());
+        let b = ProcessConfig::new("b".into(), "b.exe".into());
+        let sink: StatusSink = Arc::new(Mutex::new(Vec::new()));
+        let (mut watcher, _tx) = Watcher::new(&Config { process: vec![a.clone(), b.clone()] }, sink.clone());
+
+        // Dropping 'b' must leave 'a' in place rather than rebuilding everything.
+        watcher.apply_config(&Config { process: vec![a.clone()] });
+        assert_eq!(watcher.runtimes.len(), 1);
+        assert_eq!(watcher.runtimes[0].cfg.name, "a");
+
+        // Adding 'c' keeps 'a' and appends 'c'.
+        let c = ProcessConfig::new("c".into(), "c.exe".into());
+        watcher.apply_config(&Config { process: vec![a.clone(), c.clone()] });
+        assert_eq!(watcher.runtimes.len(), 2);
+        assert_eq!(watcher.runtimes[0].cfg.name, "a");
+        assert_eq!(watcher.runtimes[1].cfg.name, "c");
     }
 
     #[test]
