@@ -902,7 +902,7 @@ impl eframe::App for GuardianApp {
             }
             ui.horizontal_centered(|ui| {
                 ui.add_space(10.0);
-                ui::icon(ui, ui::Icon::Shield, p.accent, 16.0);
+                ui::logo(ui, 20.0);
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(s.brand_name).size(13.0).strong().color(p.ink));
                 ui.add_space(8.0);
@@ -1279,7 +1279,11 @@ fn make_tray_icon() -> tray_icon::Icon {
     // that Explorer and the taskbar show, so the tray matches everywhere.
     #[cfg(windows)]
     {
-        tray_icon::Icon::from_resource(1, Some((32, 32)))
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON};
+        // The size Windows draws the tray at, not the 32 px default: loading a
+        // bigger frame makes Windows shrink it, which blurs the logo.
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
+        tray_icon::Icon::from_resource(1, Some((size, size)))
             .or_else(|_| tray_icon::Icon::from_resource(1, None))
             .expect("load embedded guardian icon for tray")
     }
@@ -1360,6 +1364,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([880.0, 620.0])
             .with_title(title)
+            .with_icon(ui::window_icon())
             .with_decorations(false),
         ..Default::default()
     };

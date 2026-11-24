@@ -5,18 +5,50 @@
 use eframe::egui::{self, Color32, Pos2, Stroke, Ui, Vec2};
 use crate::ui_strings::Theme;
 
+/// The app logo (transparent shield + checkmark), embedded from the same PNG
+/// that generates the .ico — so the titlebar, taskbar and tray all match.
+const LOGO_PNG: &[u8] = include_bytes!("../assets/guardian.png");
+
+/// Draw the real app logo at `size` x `size` points in the titlebar.
+pub fn logo(ui: &mut Ui, size: f32) {
+    ui.add(
+        egui::Image::from_texture(&logo_texture(ui.ctx()))
+            .fit_to_exact_size(Vec2::new(size, size)),
+    );
+}
+
+/// The logo decoded for the window/taskbar icon (Alt-Tab included).
+pub fn window_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(LOGO_PNG).expect("decode guardian.png")
+}
+
+/// The logo's texture, uploaded once and then kept in the context. egui ships
+/// no image loader of its own, so `Image::from_bytes` would only ever paint its
+/// failed-to-load placeholder.
+fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::new("guardian-logo-texture");
+    if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return texture;
+    }
+    let icon = window_icon();
+    let texture = ctx.load_texture(
+        "guardian-logo",
+        egui::ColorImage::from_rgba_unmultiplied(
+            [icon.width as usize, icon.height as usize],
+            &icon.rgba,
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    texture
+}
+
 /// Vector icons drawn from primitives. The CJK system font has no glyphs for the
 /// geometric symbols the prototype uses, so text glyphs render as tofu boxes —
 /// drawing them as shapes is the only reliable fix across Windows fonts.
 #[derive(Debug, Clone, Copy)]
 pub enum Icon {
-    Shield, Grid, List, Clock, Gear, Info, Minimize, Maximize, Restore, Close, Plus,
-}
-
-/// Draw a vector icon centered in `size` x `size` points, allocating its own space.
-pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
-    icon_at(ui.painter(), rect.center(), kind, color, size);
+    Grid, List, Clock, Gear, Info, Minimize, Maximize, Restore, Close, Plus,
 }
 
 /// Draw a vector icon at an explicit center — lets callers overlay it on a button rect.
@@ -25,11 +57,6 @@ pub fn icon_at(p: &egui::Painter, c: Pos2, kind: Icon, color: Color32, size: f32
     let st = Stroke::new(1.4_f32, color);
     let at = |x: f32, y: f32| egui::pos2(c.x + x * e, c.y + y * e);
     match kind {
-        Icon::Shield => {
-            p.line(vec![at(0.0, -0.9), at(0.7, -0.5), at(0.7, 0.25), at(0.0, 0.9),
-                    at(-0.7, 0.25), at(-0.7, -0.5), at(0.0, -0.9)], st);
-            p.line(vec![at(-0.3, 0.0), at(-0.05, 0.28), at(0.38, -0.3)], st);
-        }
         Icon::Grid => {
             for (x, y) in [(-0.55, -0.55), (0.1, -0.55), (-0.55, 0.1), (0.1, 0.1)] {
                 p.rect_stroke(egui::Rect::from_min_max(at(x, y), at(x + 0.45, y + 0.45)), 0.0, st, egui::StrokeKind::Outside);
@@ -381,5 +408,17 @@ mod tests {
     fn palettes_are_distinct_per_theme() {
         assert_ne!(palette(Theme::Light).surface, palette(Theme::Dark).surface);
         assert_ne!(palette(Theme::Light).ink, palette(Theme::Dark).ink);
+    }
+
+    // egui has no image loader of its own, so a "bytes://" logo only ever paints
+    // its failed-to-load placeholder. The texture must be a real, non-empty one.
+    #[test]
+    fn logo_texture_uploads_the_embedded_png() {
+        let ctx = egui::Context::default();
+        let mut size = [0usize; 2];
+        let _ = ctx.run(Default::default(), |ctx| {
+            size = logo_texture(ctx).size();
+        });
+        assert_eq!(size, [256, 256]);
     }
 }
