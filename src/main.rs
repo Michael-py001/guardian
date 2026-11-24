@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
+use ui::ground;
 use ui_strings::{Lang, Settings, Theme, strings};
 
 /// A close request minimizes to tray only for the window's own X button.
@@ -73,21 +74,29 @@ fn save_settings(s: &Settings) {
     let _ = std::fs::write(settings_path(), serde_json::to_string_pretty(s).unwrap_or_default());
 }
 
-/// Install a Chinese-capable system font into egui so CJK is not rendered as tofu.
+/// Install a clear Chinese-capable system font into egui so CJK is not tofu and
+/// Latin text stays crisp. The CJK face goes last: egui falls back to it per-glyph,
+/// so Latin uses the sharp built-in Ubuntu face and CJK uses Microsoft YaHei UI.
 fn install_cjk_font(ctx: &egui::Context) {
     let candidates = [
-        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msyh.ttc",       // Microsoft YaHei UI — clear, modern
+        r"C:\Windows\Fonts\Deng.ttf",
         r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\simsun.ttc",
-        r"C:\Windows\Fonts\Deng.ttf",
     ];
     let found = candidates.iter().find_map(|p| std::fs::read(p).ok().map(|b| (p, b)));
-    let Some((path, data)) = found else { return };
     let mut fonts = egui::FontDefinitions::default();
+    let Some((path, data)) = found else { ctx.set_fonts(fonts); return };
     let name = format!("CJK-{}", PathBuf::from(path).file_name().unwrap_or_default().to_string_lossy());
-    fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
-    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) { list.insert(0, name.clone()); }
-    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Monospace) { list.insert(0, name); }
+    // Slight upward scale makes the dense CJK glyphs read more clearly at small sizes.
+    let data = egui::FontData::from_owned(data).tweak(egui::FontTweak {
+        scale: 1.06,
+        y_offset: -0.03,
+        ..Default::default()
+    });
+    fonts.font_data.insert(name.clone(), Arc::new(data));
+    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) { list.push(name.clone()); }
+    if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Monospace) { list.push(name); }
     ctx.set_fonts(fonts);
 }
 
@@ -841,11 +850,12 @@ impl eframe::App for GuardianApp {
             } else if response.dragged() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_centered(|ui| {
                 ui.add_space(10.0);
                 ui::icon(ui, ui::Icon::Shield, p.accent, 16.0);
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(s.brand_name).size(12.0).strong().color(p.ink));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(s.brand_name).size(13.0).strong().color(p.ink));
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new(s.brand_scope).size(11.0).color(p.muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let btn = |ui: &mut egui::Ui, icon: ui::Icon, tip: &str| {
@@ -876,7 +886,12 @@ impl eframe::App for GuardianApp {
         });
 
         // ---- Icon rail: switch between the four views ----
-        egui::SidePanel::left("rail").exact_width(48.0).resizable(false).show(ctx, |ui| {
+        // Custom frame on purpose: egui draws a dark default bg_stroke down the
+        // panel edge, which reads as a black line in both themes. Match the palette.
+        egui::SidePanel::left("rail").exact_width(48.0).resizable(false)
+            .frame(egui::Frame::NONE.fill(ground(self.theme))
+                .stroke(egui::Stroke::new(1.0_f32, p.border)))
+            .show(ctx, |ui| {
             let mut rail_btn = |ui: &mut egui::Ui, kind: ui::Icon, tip: &str, view: View| {
                 let active = self.view == view;
                 let btn = ui.add_sized([40.0, 38.0], egui::Button::new("").frame(false));
@@ -1166,13 +1181,31 @@ impl eframe::App for GuardianApp {
 
         // ---- About dialog ----
         if self.about_open {
-            let mut open = self.about_open;
-            egui::Window::new(s.about_title).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-                ui.label(s.about_body);
-                ui.add_space(8.0);
-                if ui.button(s.close).clicked() { self.about_open = false; }
-            });
-            self.about_open = open;
+            // Both the titlebar X and the Close button close it. Never write the
+            // Window's `open` straight back over our own Close click — that used to
+            // undo the button (the old code assigned `open`, which was still true).
+            let mut open = true;
+            let mut close_clicked = false;
+            let response = egui::Window::new(s.about_title)
+                .collapsible(false).resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .open(&mut open).show(ctx, |ui| {
+                    ui.label(s.about_body);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.about_github).size(11.0).color(p.muted));
+                        ui.add(egui::Hyperlink::from_label_and_url(
+                            "github.com/Michael-py001/guardian",
+                            "https://github.com/Michael-py001/guardian",
+                        ));
+                    });
+                    ui.add_space(8.0);
+                    // Plain button (not right_to_left): that layout fills the whole
+                    // available height and centres the button, inflating the dialog.
+                    if ui.button(s.close).clicked() { close_clicked = true; }
+                });
+            let _ = response;
+            self.about_open = open && !close_clicked;
         }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(300));

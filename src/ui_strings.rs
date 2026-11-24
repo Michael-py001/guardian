@@ -157,6 +157,7 @@ pub struct Str {
     pub add_adopt: &'static str,
     pub about_title: &'static str,
     pub about_body: &'static str,
+    pub about_github: &'static str,
     pub close: &'static str,
     pub status_bar: &'static str,
     // tray
@@ -298,6 +299,7 @@ static ZH: Str = Str {
     add_adopt: "添加并接管选中进程",
     about_title: "关于 Guardian",
     about_body: "Guardian 是一个轻量、开源的可视化进程守护工具。\n\n程序意外退出时自动重启，采用指数退避避免疯狂重试。\n支持中英文、系统托盘、开机自启、崩溃历史。\n\n基于 Rust + egui 构建。MIT 开源协议。",
+    about_github: "项目主页：",
     close: "关闭",
     status_bar: "关闭窗口将最小化到托盘，守护继续运行",
     tray_show: "显示窗口",
@@ -430,6 +432,7 @@ static EN: Str = Str {
     add_adopt: "Add and adopt selected process",
     about_title: "About Guardian",
     about_body: "Guardian is a lightweight, open-source visual process guardian.\n\nIt restarts programs that exit unexpectedly, using exponential backoff to avoid frantic retries.\nFeatures: 中文/English, system tray, autostart, crash history.\n\nBuilt with Rust + egui. MIT licensed.",
+    about_github: "Project: ",
     close: "Close",
     status_bar: "Closing the window minimizes Guardian to the tray; guarding continues",
     tray_show: "Show window",

@@ -102,14 +102,14 @@ pub fn palette(theme: Theme) -> Palette {
     match theme {
         Theme::Light => Palette {
             surface: Color32::from_rgb(255, 255, 255),
-            border: Color32::from_rgb(229, 231, 235),
-            ink: Color32::from_rgb(22, 24, 29),
-            muted: Color32::from_rgb(95, 99, 104),
-            accent: Color32::from_rgb(47, 111, 192),
-            green: Color32::from_rgb(36, 123, 80),
-            red: Color32::from_rgb(196, 36, 42),
-            amber: Color32::from_rgb(146, 64, 14),
-            track: Color32::from_rgb(232, 234, 238),
+            border: Color32::from_rgb(224, 228, 234),
+            ink: Color32::from_rgb(26, 32, 44),
+            muted: Color32::from_rgb(106, 114, 128),
+            accent: Color32::from_rgb(37, 99, 235),
+            green: Color32::from_rgb(22, 138, 88),
+            red: Color32::from_rgb(208, 48, 60),
+            amber: Color32::from_rgb(161, 98, 7),
+            track: Color32::from_rgb(234, 238, 243),
         },
         Theme::Dark => Palette {
             surface: Color32::from_rgb(19, 18, 23),
@@ -133,6 +133,7 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
         Theme::Dark => egui::Visuals::dark(),
     };
     visuals.selection.bg_fill = p.accent;
+    visuals.selection.stroke.color = p.accent;
     visuals.hyperlink_color = p.accent;
     // The panel/window ground drives menu bar, central panel and title backgrounds.
     visuals.panel_fill = ground(theme);
@@ -144,7 +145,14 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
     visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
     visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
     visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
-    // ponytail: one stroke width for all noninteractive text; no per-role tuning needed.
+    // Selected toggle labels (language/theme): solid accent fill with white text —
+    // egui otherwise inherits the button's hover text colour, which is unreadable on accent.
+    visuals.widgets.inactive.fg_stroke.color = p.ink;
+    visuals.widgets.hovered.fg_stroke.color = p.ink;
+    visuals.widgets.active.fg_stroke.color = Color32::WHITE;
+    visuals.widgets.open.fg_stroke.color = Color32::WHITE;
+    // Roomy buttons, matching the prototype's pill padding.
+    ctx.style_mut(|style| style.spacing.button_padding = egui::vec2(12.0, 6.0));
     ctx.set_visuals(visuals);
 }
 
