@@ -370,8 +370,18 @@ impl GuardianApp {
 
     /// Crash-history card with structured event rows and a footer.
     fn draw_crash_card(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
-        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 10.0)).show(ui, |ui| {
+        // A Frame sizes itself to its content, so a short (or empty) crash list
+        // renders as a narrow card. Draw the surface/border ourselves across the
+        // full available width, then lay out the content inside it.
+        let outer = ui.available_width();
+        // Reserve a rect as tall as the content will be: header + up to 6 event rows + footer.
+        let shown = self.crashes.len().min(6);
+        let h = if shown == 0 { 78.0 } else { 70.0 + shown as f32 * 44.0 + 26.0 };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(outer, h), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 6.0, p.surface);
+        ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+        let inner = rect.shrink(14.0);
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::LEFT)), |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(s.crash_history).size(14.0).strong().color(p.ink));
                     ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(11.0).color(p.muted));
@@ -395,7 +405,7 @@ impl GuardianApp {
                         });
                     });
                 }
-            });
+        });
     }
 
     /// One crash event as the prototype's two-row card: name+time, then details.
