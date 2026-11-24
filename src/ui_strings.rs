@@ -26,7 +26,7 @@ pub enum Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme::Light
+        Theme::Dark
     }
 }
 
@@ -40,7 +40,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: Lang::Zh, theme: Theme::Light }
+        Self { lang: Lang::Zh, theme: Theme::Dark }
     }
 }
 
@@ -58,6 +58,7 @@ pub struct Str {
     pub note_crash_cluster: &'static str, // template: "{} within 20 minutes"
     pub live_active: &'static str,
     pub view_all: &'static str,
+    pub showing_latest: &'static str, // template: "Showing latest {} (of total)"
     pub subtitle_running: &'static str, // template: "3 of 5 entries are running"
     pub subtitle_finding: &'static str, // template: "{name} restarted {n} times"
     pub chart_restart_trend: &'static str,
@@ -186,6 +187,7 @@ static ZH: Str = Str {
     note_crash_cluster: "{} 次集中在 20 分钟内",
     live_active: "守护运行中",
     view_all: "查看全部 →",
+    showing_latest: "仅显示最近 {} 条",
     subtitle_running: "{} 个正在运行 / 共 {} 个守护项",
     subtitle_finding: "{} 今日重启 {} 次",
     chart_restart_trend: "重启趋势",
@@ -302,6 +304,7 @@ static EN: Str = Str {
     note_crash_cluster: "{} within 20 minutes",
     live_active: "Guarding is active",
     view_all: "View all →",
+    showing_latest: "Showing latest {}",
     subtitle_running: "{} of {} entries are running",
     subtitle_finding: "{} restarted {} times today",
     chart_restart_trend: "Restart trend",
@@ -419,6 +422,13 @@ mod tests {
         assert_ne!(zh.add_button, en.add_button);
         assert_ne!(zh.menu_file, en.menu_file);
         assert_ne!(zh.about_body, en.about_body);
+    }
+
+    #[test]
+    fn default_matches_prototype() {
+        // The approved prototype opens in dark theme with Chinese copy.
+        assert_eq!(Settings::default().theme, Theme::Dark);
+        assert_eq!(Settings::default().lang, Lang::Zh);
     }
 
     #[test]

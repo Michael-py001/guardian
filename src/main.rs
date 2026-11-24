@@ -887,6 +887,15 @@ impl eframe::App for GuardianApp {
                             ui.end_row();
                         }
                     });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.status_bar).size(10.0).color(p.muted));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new(s.view_all).size(10.0).color(p.accent)).frame(false)).clicked() {
+                                self.view = View::Processes;
+                            }
+                        });
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -908,9 +917,13 @@ impl eframe::App for GuardianApp {
                         }
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new(s.view_all).size(11.0).color(p.accent)).frame(false)).clicked() {
-                                self.view = View::History;
-                            }
+                            let shown = self.crashes.len().min(6);
+                            ui.label(egui::RichText::new(s.showing_latest.replace("{}", &shown.to_string())).size(10.0).color(p.muted));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new(egui::RichText::new(s.menu_clear_history).size(10.0).color(p.accent)).frame(false)).clicked() {
+                                    self.clear_history();
+                                }
+                            });
                         });
                     }
                 });
