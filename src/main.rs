@@ -557,17 +557,9 @@ impl GuardianApp {
             .map(|(name, n)| (name.to_string(), n))
     }
 
-    /// Honest counters for the health card: (running now, stopped now, crashes in 24h).
-    fn health_counts(&self) -> (usize, usize, usize) {
-        use chrono::{Local, NaiveDateTime};
-        let running = self.statuses.iter().filter(|x| x.running).count();
-        let stopped = self.statuses.iter().filter(|x| !x.running).count();
-        let now = Local::now().naive_local();
-        let crashes = self.crashes.iter().filter(|c| {
-            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S")
-                .map(|t| (now - t).num_hours() < 24).unwrap_or(false)
-        }).count();
-        (running, stopped, crashes)
+    /// Entries currently stopped (not running), for the health card's offline figure.
+    fn offline_count(&self) -> usize {
+        self.statuses.iter().filter(|x| !x.running).count()
     }
 
     /// Guard entries adopted from an already-running process.
@@ -821,7 +813,7 @@ impl eframe::App for GuardianApp {
                         self.add.open = true;
                         self.add.processes_loaded = false;
                     }
-                    let pause_label = if self.paused { s.resume_button } else { s.pause_button };
+                    let pause_label = if self.paused { s.resume_button } else { s.pause_all };
                     if ui.button(egui::RichText::new(pause_label).size(12.0)).clicked() { self.toggle_pause(); }
                 });
             });
@@ -851,6 +843,11 @@ impl eframe::App for GuardianApp {
                 if ui.button(auto_label).clicked() { self.toggle_autostart(); }
                 ui.add_space(6.0);
                 ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(s.search_hint).desired_width(150.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(
+                        s.entries_count.replace("{}", &self.configs.len().to_string())
+                    ).size(11.0).color(p.muted));
+                });
             });
             if let Some(toast) = &self.toast {
                 ui.add_space(4.0);
@@ -861,14 +858,31 @@ impl eframe::App for GuardianApp {
             // Chart band: trend + health ring. Side by side when wide, stacked when narrow.
             let (trend_values, trend_labels) = self.trend_data();
             let health = self.health_ratio();
-            let (h_running, h_stopped, h_crashes) = self.health_counts();
+            let h_stopped = self.offline_count();
             let trend_card = |ui: &mut egui::Ui| {
                 egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
                     .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
                         ui.label(egui::RichText::new(s.chart_restart_trend).size(14.0).strong().color(p.ink));
                         ui.label(egui::RichText::new(s.chart_trend_meta).size(11.0).color(p.muted));
-                        ui.add_space(6.0);
-                        ui::line_chart(ui, self.theme, &trend_values, &trend_labels);
+                        ui.add_space(4.0);
+                        // Prototype's chart legend: one accent swatch + "All entries".
+                        ui.horizontal(|ui| {
+                            let sw = ui.cursor().min;
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(sw + egui::vec2(0.0, 3.0), egui::vec2(8.0, 8.0)), 2.0, p.accent);
+                            ui.add_space(14.0);
+                            ui.label(egui::RichText::new(s.legend_all_entries).size(11.0).color(p.muted));
+                        });
+                        ui.add_space(2.0);
+                        // Descriptive peak callout, e.g. "5 restarts at 14:00".
+                        let peak_note = trend_values.iter().enumerate()
+                            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                            .filter(|(_, v)| **v > 0.0)
+                            .map(|(i, v)| {
+                                let hour = trend_labels.get(i).and_then(|l| l.split(':').next()).unwrap_or("");
+                                s.trend_peak.replace("{}", &format!("{:.0}", v)).replacen("{}", hour, 1)
+                            });
+                        ui::line_chart(ui, self.theme, &trend_values, &trend_labels, peak_note.as_deref());
                     });
             };
             let health_card = |ui: &mut egui::Ui| {
@@ -878,15 +892,18 @@ impl eframe::App for GuardianApp {
                         ui.label(egui::RichText::new(s.chart_uptime_meta).size(11.0).color(p.muted));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui::ring_chart(ui, self.theme, health);
+                            ui::ring_chart(ui, self.theme, health, s.ring_online_rate);
                             ui.vertical(|ui| {
+                                let online_secs = self.statuses.iter().filter(|x| x.running)
+                                    .map(|x| x.uptime_secs).max().unwrap_or(0);
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(s.label_online).size(11.0).color(p.muted));
-                                    ui.label(egui::RichText::new(format!("{}", h_running)).size(11.0).color(p.green));
+                                    ui.label(egui::RichText::new(format_duration(online_secs)).size(11.0).color(p.green));
                                 });
+                                let restarting = self.statuses.iter().filter(|x| x.restarting).count();
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(s.label_crashes_24h).size(11.0).color(p.muted));
-                                    ui.label(egui::RichText::new(format!("{}", h_crashes)).size(11.0).color(p.amber));
+                                    ui.label(egui::RichText::new(s.label_restarting).size(11.0).color(p.muted));
+                                    ui.label(egui::RichText::new(format!("{}", restarting)).size(11.0).color(p.amber));
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(s.label_offline).size(11.0).color(p.muted));
@@ -899,10 +916,11 @@ impl eframe::App for GuardianApp {
                             ui.label(egui::RichText::new(s.longest_running.replace("{}", &format_duration(longest.uptime_secs)))
                                 .size(11.0).color(p.muted));
                         }
-                        if let Some((name, n)) = self.top_crasher_today() {
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new(fill2(s.health_finding, &name, &n.to_string()))
-                                .size(11.0).color(p.muted));
+                        if h_stopped > 0 {
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(
+                                s.health_offline_finding.replace("{}", &h_stopped.to_string())
+                            ).size(11.0).color(p.muted));
                         }
                     });
             };

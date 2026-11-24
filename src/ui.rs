@@ -101,7 +101,7 @@ pub fn stat_strip(ui: &mut Ui, theme: Theme, cells: &[(&str, &str, &str, Color32
 
 /// Restart trend: one line, quiet horizontal gridlines, round ticks, no markers.
 /// Values are real restart counts per bucket from crash history.
-pub fn line_chart(ui: &mut Ui, theme: Theme, values: &[f32], labels: &[String]) {
+pub fn line_chart(ui: &mut Ui, theme: Theme, values: &[f32], labels: &[String], peak_note: Option<&str>) {
     let p = palette(theme);
     let height = 150.0;
     let (rect, _) = ui.allocate_exact_size(
@@ -146,25 +146,28 @@ pub fn line_chart(ui: &mut Ui, theme: Theme, values: &[f32], labels: &[String]) 
             .collect();
         paint.line(points, Stroke::new(2.0_f32, p.accent));
 
-        // Annotate the busiest bucket, matching the prototype's "peak hour" callout.
-        if let Some(peak) = values.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
-            if *peak.1 > 0.0 {
-                let px = plot.left() + step * peak.0 as f32;
-                let py = plot.bottom() - (*peak.1 / top) * plot.height();
-                paint.text(
-                    egui::pos2(px, py - 8.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    format!("{:.0}", peak.1),
-                    egui::FontId::proportional(11.0),
-                    p.accent,
-                );
+        // Annotate the busiest bucket with a descriptive callout near the top.
+        if let Some(note) = peak_note {
+            if let Some(peak) = values.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
+                if *peak.1 > 0.0 {
+                    let px = plot.left() + step * peak.0 as f32;
+                    paint.text(
+                        egui::pos2(px, plot.top() + 4.0),
+                        egui::Align2::CENTER_TOP,
+                        note,
+                        egui::FontId::proportional(10.0),
+                        p.accent,
+                    );
+                }
             }
         }
     }
 
-    // x labels: first, middle, last only — one step, never rotated.
+    // x labels: five evenly spaced ticks like the prototype — never rotated.
     let denom = values.len().saturating_sub(1).max(1) as f32;
-    for &i in &[0usize, values.len() / 2, values.len().saturating_sub(1)] {
+    let n = values.len();
+    let ticks = [0usize, n / 4, n / 2, (n * 3) / 4, n.saturating_sub(1)];
+    for &i in &ticks {
         if let Some(label) = labels.get(i) {
             let x = plot.left() + (plot.width() * i as f32 / denom);
             paint.text(
@@ -181,7 +184,7 @@ pub fn line_chart(ui: &mut Ui, theme: Theme, values: &[f32], labels: &[String]) 
 }
 
 /// Online-health ring: one filled arc on a quiet track, percentage in the middle.
-pub fn ring_chart(ui: &mut Ui, theme: Theme, ratio: f32) {
+pub fn ring_chart(ui: &mut Ui, theme: Theme, ratio: f32, sub_label: &str) {
     let p = palette(theme);
     let size = 96.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
@@ -205,11 +208,18 @@ pub fn ring_chart(ui: &mut Ui, theme: Theme, ratio: f32) {
         paint.line(pts, Stroke::new(8.0_f32, p.green));
     }
     paint.text(
-        center,
+        center + Vec2::new(0.0, -6.0),
         egui::Align2::CENTER_CENTER,
         format!("{:.0}%", ratio * 100.0),
-        egui::FontId::proportional(20.0),
+        egui::FontId::proportional(18.0),
         p.ink,
+    );
+    paint.text(
+        center + Vec2::new(0.0, 11.0),
+        egui::Align2::CENTER_CENTER,
+        sub_label,
+        egui::FontId::proportional(9.0),
+        p.muted,
     );
 }
 

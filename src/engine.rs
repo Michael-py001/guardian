@@ -375,6 +375,8 @@ pub struct EntryStatus {
     pub last_exit: Option<String>,
     /// Seconds this process has been continuously running (0 when stopped).
     pub uptime_secs: u64,
+    /// True while a restart is scheduled and the process is not running.
+    pub restarting: bool,
 }
 
 struct Runtime {
@@ -412,6 +414,7 @@ impl Runtime {
             restarts: self.restarts,
             last_exit: self.last_exit.clone(),
             uptime_secs: self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0),
+            restarting: self.child.is_none() && self.pending_start_at.is_some(),
         }
     }
 }
@@ -775,6 +778,9 @@ mod tests {
     fn runtime_reports_real_uptime() {
         let mut rt = Runtime::new(ProcessConfig::new("app".into(), "app.exe".into()));
         assert_eq!(rt.status().uptime_secs, 0); // not started yet
+        assert!(!rt.status().restarting);
+        rt.pending_start_at = Some(Instant::now() + Duration::from_secs(1));
+        assert!(rt.status().restarting); // scheduled, not running
         rt.started_at = Some(Instant::now() - Duration::from_secs(42));
         assert!(rt.status().uptime_secs >= 42);
     }
