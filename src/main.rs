@@ -26,6 +26,15 @@ fn fill2(template: &str, first: &str, second: &str) -> String {
     template.replacen("{}", first, 1).replacen("{}", second, 1)
 }
 
+/// Seconds to a compact "14h 22m" / "41s" label, like the prototype's uptime figures.
+fn format_duration(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 { format!("{}h {:02}m", h, m) }
+    else if m > 0 { format!("{}m {:02}s", m, secs % 60) }
+    else { format!("{}s", secs) }
+}
+
 /// Four clock labels for the restart-pulse axis: 60, 40, 20 minutes ago, now.
 fn pulse_axis_labels() -> [String; 4] {
     use chrono::{Local, Duration};
@@ -479,17 +488,11 @@ impl GuardianApp {
         lanes
     }
 
-    /// Health score: fraction of the last 24h without a crash (1 crash ≈ 2 min down).
-    /// No uptime log exists, so this is a conservative estimate, not a measurement.
+    /// Share of guarded entries that are running right now. No estimate.
     fn health_ratio(&self) -> f32 {
-        use chrono::{Local, NaiveDateTime};
-        let now = Local::now().naive_local();
-        let crashes = self.crashes.iter().filter(|c| {
-            NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S")
-                .map(|t| (now - t).num_hours() < 24).unwrap_or(false)
-        }).count() as f32;
-        // ponytail: one crash ≈ 2 minutes of downtime; upgrade when real uptime is logged.
-        (86400.0 - (crashes * 120.0).min(86400.0)) / 86400.0
+        if self.statuses.is_empty() { return 0.0; }
+        let running = self.statuses.iter().filter(|x| x.running).count();
+        running as f32 / self.statuses.len() as f32
     }
 
     /// The process with the most restarts today, for the subtitle finding.
@@ -824,8 +827,13 @@ impl eframe::App for GuardianApp {
                                 });
                             });
                         });
-                        if let Some((name, n)) = self.top_crasher_today() {
+                        if let Some(longest) = self.statuses.iter().filter(|x| x.running).max_by_key(|x| x.uptime_secs) {
                             ui.add_space(6.0);
+                            ui.label(egui::RichText::new(s.longest_running.replace("{}", &format_duration(longest.uptime_secs)))
+                                .size(11.0).color(p.muted));
+                        }
+                        if let Some((name, n)) = self.top_crasher_today() {
+                            ui.add_space(4.0);
                             ui.label(egui::RichText::new(fill2(s.health_finding, &name, &n.to_string()))
                                 .size(11.0).color(p.muted));
                         }
@@ -1083,7 +1091,14 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod close_tests {
-    use super::{fill2, should_minimize_to_tray};
+    use super::{fill2, format_duration, should_minimize_to_tray};
+
+    #[test]
+    fn duration_formats_match_prototype() {
+        assert_eq!(format_duration(41), "41s");
+        assert_eq!(format_duration(537), "8m 57s");
+        assert_eq!(format_duration(14 * 3600 + 22 * 60), "14h 22m");
+    }
 
     #[test]
     fn fill2_replaces_placeholders_in_order() {

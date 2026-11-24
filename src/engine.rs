@@ -373,6 +373,8 @@ pub struct EntryStatus {
     pub pid: Option<u32>,
     pub restarts: i64,
     pub last_exit: Option<String>,
+    /// Seconds this process has been continuously running (0 when stopped).
+    pub uptime_secs: u64,
 }
 
 struct Runtime {
@@ -409,6 +411,7 @@ impl Runtime {
             pid: self.child.as_ref().map(|c| c.pid()),
             restarts: self.restarts,
             last_exit: self.last_exit.clone(),
+            uptime_secs: self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0),
         }
     }
 }
@@ -706,6 +709,14 @@ mod tests {
         let s = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert_eq!(back.process[0].name, "app");
+    }
+
+    #[test]
+    fn runtime_reports_real_uptime() {
+        let mut rt = Runtime::new(ProcessConfig::new("app".into(), "app.exe".into()));
+        assert_eq!(rt.status().uptime_secs, 0); // not started yet
+        rt.started_at = Some(Instant::now() - Duration::from_secs(42));
+        assert!(rt.status().uptime_secs >= 42);
     }
 
     #[test]
