@@ -7,9 +7,11 @@ mod ui_strings;
 
 use eframe::egui;
 use engine::{CrashEntry, EntryStatus, ProcessConfig, RunningProcess, StatusSink, Watcher};
+#[cfg(windows)]
+use raw_window_handle::HasWindowHandle;
 use rfd::FileDialog;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
@@ -21,6 +23,15 @@ use ui_strings::{Lang, Settings, Theme, strings};
 fn should_minimize_to_tray(close_requested: bool, quitting: bool) -> bool {
     close_requested && !quitting
 }
+
+/// Main window handle, stored as `isize` so the tray callback thread (which must
+/// be `Send`) can show/focus the window without going through egui's `update()` —
+/// that loop stalls completely once the window is hidden in the tray.
+static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// Set by the tray autostart click; `update()` refreshes the menu label on its
+/// next frame (when the window is shown again after being hidden).
+static TRAY_AUTOSTART_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Fill two `{}` placeholders in order. `str::replace` would fill both with the first value.
 fn fill2(template: &str, first: &str, second: &str) -> String {
@@ -827,14 +838,12 @@ impl eframe::App for GuardianApp {
         // eframe may re-apply system visuals; keep chrome in sync with our palette every frame.
         ui::apply_visuals(ctx, self.theme);
 
-        // Tray events
-        let tray_ids = self.tray.as_ref().map(|t| (t.show.id().clone(), t.autostart.id().clone(), t.quit.id().clone()));
-        if let (Some((show_id, auto_id, quit_id)), Ok(event)) = (tray_ids, MenuEvent::receiver().try_recv()) {
-            if event.id == show_id {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            } else if event.id == auto_id { self.toggle_autostart(); self.update_tray_labels(); }
-            else if event.id == quit_id { self.quit(ctx); }
+        // Tray menu events are handled directly by a background callback thread
+        // (see install_tray_handler): once the window is hidden, this update loop
+        // stalls entirely, so menu clicks cannot be processed here.
+        if TRAY_AUTOSTART_CHANGED.swap(false, Ordering::SeqCst) {
+            self.autostart = engine::task_installed();
+            self.update_tray_labels();
         }
 
         // Keyboard shortcuts advertised in the menu: Ctrl+N add, Del remove, Esc close dialogs.
@@ -1266,28 +1275,82 @@ impl eframe::App for GuardianApp {
 }
 
 fn make_tray_icon() -> tray_icon::Icon {
-    let size = 32u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size { for x in 0..size {
-        let edge = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
-        let (r, g, b) = if edge { (40, 44, 52) } else { (54, 132, 232) };
-        rgba.extend_from_slice(&[r, g, b, 255]);
-    }}
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("tray icon")
+    // Use the same shield logo embedded into the EXE (assets/guardian.rc, ID 1)
+    // that Explorer and the taskbar show, so the tray matches everywhere.
+    #[cfg(windows)]
+    {
+        tray_icon::Icon::from_resource(1, Some((32, 32)))
+            .or_else(|_| tray_icon::Icon::from_resource(1, None))
+            .expect("load embedded guardian icon for tray")
+    }
+    #[cfg(not(windows))]
+    {
+        let size = 32u32;
+        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+        for _ in 0..size * size { rgba.extend_from_slice(&[54, 132, 232, 255]); }
+        tray_icon::Icon::from_rgba(rgba, size, size).expect("tray icon")
+    }
 }
+
+/// Stable tray menu IDs so the background click handler can recognize each item.
+const TRAY_SHOW: &str = "guardian.tray.show";
+const TRAY_AUTOSTART: &str = "guardian.tray.autostart";
+const TRAY_QUIT: &str = "guardian.tray.quit";
 
 fn build_tray(lang: Lang) -> Option<TrayState> {
     let s = strings(lang);
     let menu = Menu::new();
-    let show = MenuItem::new(s.tray_show, true, None);
+    let show = MenuItem::with_id(TRAY_SHOW, s.tray_show, true, None);
     let auto_label = if engine::task_installed() { s.tray_autostart_on } else { s.tray_autostart_off };
-    let autostart = MenuItem::new(auto_label, true, None);
-    let quit = MenuItem::new(s.tray_quit, true, None);
+    let autostart = MenuItem::with_id(TRAY_AUTOSTART, auto_label, true, None);
+    let quit = MenuItem::with_id(TRAY_QUIT, s.tray_quit, true, None);
     menu.append(&show).ok()?; menu.append(&autostart).ok()?; menu.append(&quit).ok()?;
     let icon = TrayIconBuilder::new().with_tooltip(s.app_title).with_icon(make_tray_icon())
         .with_menu(Box::new(menu)).build().ok()?;
     Some(TrayState { _icon: icon, show, autostart, quit })
 }
+
+/// Handle tray clicks on the menu event thread, independent of egui's update loop.
+/// `update()` stops running while the window is hidden in the tray, so acting there
+/// makes "Show"/"Quit" appear dead. These actions touch only globals / Win32 calls.
+fn install_tray_handler() {
+    MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
+        match event.id.as_ref() {
+            TRAY_SHOW => show_main_window(),
+            TRAY_AUTOSTART => {
+                if engine::task_installed() {
+                    let _ = engine::uninstall_task();
+                } else {
+                    let _ = engine::install_task(
+                        &std::env::current_exe().unwrap_or_default(),
+                        &config_path(),
+                    );
+                }
+                TRAY_AUTOSTART_CHANGED.store(true, Ordering::SeqCst);
+            }
+            TRAY_QUIT => {
+                engine::SHUTDOWN.store(true, Ordering::SeqCst);
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }));
+}
+
+#[cfg(windows)]
+fn show_main_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_SHOW};
+    let hwnd = MAIN_HWND.load(Ordering::SeqCst);
+    if hwnd != 0 {
+        unsafe {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn show_main_window() {}
 
 fn main() -> eframe::Result<()> {
     let st = load_settings();
@@ -1304,6 +1367,15 @@ fn main() -> eframe::Result<()> {
         // Apply saved theme + CJK font before first frame.
         install_cjk_font(&cc.egui_ctx);
         ui::apply_visuals(&cc.egui_ctx, st.theme);
+        // Remember the HWND so the tray callback thread can show/focus the window
+        // even while egui's update loop is stalled (hidden in tray).
+        #[cfg(windows)]
+        if let Ok(handle) = cc.window_handle() {
+            if let raw_window_handle::RawWindowHandle::Win32(w) = handle.as_raw() {
+                MAIN_HWND.store(w.hwnd.get(), Ordering::SeqCst);
+            }
+        }
+        install_tray_handler();
         let tray = build_tray(st.lang);
         let mut app = GuardianApp::new(tray);
         app.font_installed = true;

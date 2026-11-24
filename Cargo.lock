@@ -1746,11 +1746,13 @@ dependencies = [
  "eframe",
  "egui",
  "embed-resource",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
  "toml 0.8.2",
  "tray-icon",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
