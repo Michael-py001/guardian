@@ -84,6 +84,10 @@ pub struct Palette {
     pub ink: Color32,
     pub muted: Color32,
     pub accent: Color32,
+    /// Soft tint for selected/pressed widgets and text selection. Kept much
+    /// lighter than `accent` so settings toggles stay quiet; the strong accent
+    /// is reserved for data (charts, live line, links).
+    pub selection_bg: Color32,
     pub green: Color32,
     pub red: Color32,
     pub amber: Color32,
@@ -106,6 +110,7 @@ pub fn palette(theme: Theme) -> Palette {
             ink: Color32::from_rgb(26, 32, 44),
             muted: Color32::from_rgb(106, 114, 128),
             accent: Color32::from_rgb(37, 99, 235),
+            selection_bg: Color32::from_rgb(226, 236, 252),
             green: Color32::from_rgb(22, 138, 88),
             red: Color32::from_rgb(208, 48, 60),
             amber: Color32::from_rgb(161, 98, 7),
@@ -117,6 +122,7 @@ pub fn palette(theme: Theme) -> Palette {
             ink: Color32::from_gray(255),
             muted: Color32::from_rgb(138, 140, 146),
             accent: Color32::from_rgb(106, 166, 232),
+            selection_bg: Color32::from_rgb(40, 60, 82),
             green: Color32::from_rgb(68, 162, 130),
             red: Color32::from_rgb(229, 86, 111),
             amber: Color32::from_rgb(217, 164, 65),
@@ -132,8 +138,10 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
         Theme::Light => egui::Visuals::light(),
         Theme::Dark => egui::Visuals::dark(),
     };
-    visuals.selection.bg_fill = p.accent;
-    visuals.selection.stroke.color = p.accent;
+    // Selected toggles / text selection: soft tint with accent text, not a solid
+    // cobalt block. Keeps the strong accent for data marks (charts, live line).
+    visuals.selection.bg_fill = p.selection_bg;
+    visuals.selection.stroke = Stroke::new(1.0_f32, p.accent);
     visuals.hyperlink_color = p.accent;
     // The panel/window ground drives menu bar, central panel and title backgrounds.
     visuals.panel_fill = ground(theme);
@@ -145,12 +153,12 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
     visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
     visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
     visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
-    // Selected toggle labels (language/theme): solid accent fill with white text —
-    // egui otherwise inherits the button's hover text colour, which is unreadable on accent.
+    // Keep button text on the normal ink colour in every interaction state.
+    // Selected toggles get their accent text from `selection.stroke` above.
     visuals.widgets.inactive.fg_stroke.color = p.ink;
     visuals.widgets.hovered.fg_stroke.color = p.ink;
-    visuals.widgets.active.fg_stroke.color = Color32::WHITE;
-    visuals.widgets.open.fg_stroke.color = Color32::WHITE;
+    visuals.widgets.active.fg_stroke.color = p.ink;
+    visuals.widgets.open.fg_stroke.color = p.ink;
     // Roomy buttons, matching the prototype's pill padding.
     ctx.style_mut(|style| style.spacing.button_padding = egui::vec2(12.0, 6.0));
     ctx.set_visuals(visuals);
