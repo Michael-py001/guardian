@@ -33,6 +33,19 @@ static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 /// next frame (when the window is shown again after being hidden).
 static TRAY_AUTOSTART_CHANGED: AtomicBool = AtomicBool::new(false);
 
+/// Mirrors whether the main window is on screen. While hidden, `update()` leaves
+/// the repaint loop idle: a hidden window never receives `WM_PAINT`, so a queued
+/// repaint would leave eframe polling at 100% CPU instead of sleeping.
+static WINDOW_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// egui context, kept so the tray thread can ask for one frame after showing the
+/// window again (nothing repaints a window that receives no messages otherwise).
+static MAIN_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
+
+/// Where the window sat before it was parked off-screen, so showing it again
+/// puts it back where the user left it.
+static PARKED_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+
 /// Fill two `{}` placeholders in order. `str::replace` would fill both with the first value.
 fn fill2(template: &str, first: &str, second: &str) -> String {
     template.replacen("{}", first, 1).replacen("{}", second, 1)
@@ -880,7 +893,7 @@ impl eframe::App for GuardianApp {
         }
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if should_minimize_to_tray(close_requested, self.quitting) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            set_main_window_visible(false);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
@@ -918,7 +931,7 @@ impl eframe::App for GuardianApp {
                     // The titlebar X hides to tray; File/Quit and the tray menu's
                     // Quit are the only paths that actually exit the process.
                     if btn(ui, ui::Icon::Close, s.win_close) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                        set_main_window_visible(false);
                     }
                     let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                     if btn(ui, if max { ui::Icon::Restore } else { ui::Icon::Maximize },
@@ -999,7 +1012,7 @@ impl eframe::App for GuardianApp {
                     if ui.button(s.menu_open_log).clicked() { self.open_log(); ui.close_menu(); }
                     ui.separator();
                     if ui.button(s.menu_minimize_tray).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
+                        set_main_window_visible(false); ui.close_menu();
                     }
                     if menu_item(ui, s.menu_quit, "Alt+F4") { self.quit(ctx); }
                 });
@@ -1026,7 +1039,7 @@ impl eframe::App for GuardianApp {
                     });
                     ui.separator();
                     if ui.button(s.menu_minimize_tray).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
+                        set_main_window_visible(false); ui.close_menu();
                     }
                 });
                 ui.menu_button(s.menu_help, |ui| {
@@ -1266,6 +1279,13 @@ impl eframe::App for GuardianApp {
             self.about_open = open && !close_clicked;
         }
 
+        if WINDOW_HIDDEN.load(Ordering::SeqCst) {
+            // Hidden to the tray: never queue a repaint. A hidden window gets no
+            // WM_PAINT, so a queued frame leaves eframe polling instead of sleeping;
+            // the tray handler asks for one frame when it shows the window again.
+            return;
+        }
+
         ctx.request_repaint_after(std::time::Duration::from_millis(300));
     }
 
@@ -1341,20 +1361,66 @@ fn install_tray_handler() {
     }));
 }
 
+/// Hide or show the main window, entirely through Win32.
+///
+/// Two eframe/winit behaviours shape this:
+///
+/// * `ViewportCommand::Visible(false)` leaves winit holding `VISIBLE = false`,
+///   while showing the window from the tray means a raw `ShowWindow(SW_SHOW)`
+///   that winit never hears about. Every later flag diff (a second hide,
+///   maximize, minimize) then runs with `new` lacking `VISIBLE`, and winit ends
+///   by calling `ShowWindow(SW_HIDE)`: the X button looked dead, and maximizing
+///   or minimizing made the window vanish. Keeping visibility outside winit
+///   leaves no stale flag to disagree with the HWND.
+/// * A window that is not visible never gets `WM_PAINT`, so eframe's queued
+///   repaint leaves its event loop polling at a full core. Parking the window
+///   off-screen instead (still `WS_VISIBLE`, out of every monitor) hides it just
+///   as well and keeps the loop idle — measured at 0% CPU versus 100%.
 #[cfg(windows)]
-fn show_main_window() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_SHOW};
+fn set_main_window_visible(visible: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, IsIconic, SetForegroundWindow, SetWindowPos, ShowWindow, SWP_NOACTIVATE,
+        SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOW,
+    };
     let hwnd = MAIN_HWND.load(Ordering::SeqCst);
-    if hwnd != 0 {
-        unsafe {
+    if hwnd == 0 { return; }
+    WINDOW_HIDDEN.store(!visible, Ordering::SeqCst);
+    // Ask for a frame on both edges: the hide frame re-parks an off-screen window,
+    // the show frame paints the window Win32 just uncovered.
+    if let Some(ctx) = MAIN_CTX.lock().ok().and_then(|c| c.clone()) {
+        ctx.request_repaint();
+    }
+    unsafe {
+        if visible {
+            // Shown from the tray while minimized: restore first, else SW_SHOW stays iconic.
+            if IsIconic(hwnd) != 0 { ShowWindow(hwnd, SW_RESTORE); }
+            if let Some((x, y)) = PARKED_POS.lock().ok().and_then(|p| *p) {
+                SetWindowPos(hwnd, 0, x, y, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
+        } else {
+            // Off every monitor keeps the window "visible" to winit, which is what keeps
+            // eframe asleep; -32000 is the minimum a window may be placed at.
+            let mut rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            GetWindowRect(hwnd, &mut rect);
+            if let Ok(mut parked) = PARKED_POS.lock() { *parked = Some((rect.left, rect.top)); }
+            SetWindowPos(hwnd, 0, -32000, -32000, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 }
 
 #[cfg(not(windows))]
-fn show_main_window() {}
+fn set_main_window_visible(visible: bool) {
+    WINDOW_HIDDEN.store(!visible, Ordering::SeqCst);
+    if let Some(ctx) = MAIN_CTX.lock().ok().and_then(|c| c.clone()) {
+        ctx.request_repaint();
+    }
+}
+
+fn show_main_window() { set_main_window_visible(true); }
 
 fn main() -> eframe::Result<()> {
     let st = load_settings();
@@ -1380,6 +1446,9 @@ fn main() -> eframe::Result<()> {
                 MAIN_HWND.store(w.hwnd.get(), Ordering::SeqCst);
             }
         }
+        // The tray thread shows the window from outside egui, so it also needs the
+        // context to ask for the frame that paints it.
+        if let Ok(mut ctx) = MAIN_CTX.lock() { *ctx = Some(cc.egui_ctx.clone()); }
         install_tray_handler();
         let tray = build_tray(st.lang);
         let mut app = GuardianApp::new(tray);
