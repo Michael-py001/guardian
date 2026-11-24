@@ -59,6 +59,10 @@ The Explorer / taskbar / tray icon and the in-app titlebar logo all come from
 time. To regenerate after changing the design: `python assets/make_icon.py`
 (needs Pillow), then rebuild.
 
+The exe's version resource is filled from `Cargo.toml`
+(`assets/guardian.rc` plus `build.rs`), so it shows in Properties › Details and
+never drifts from the crate version.
+
 ## Where files live
 
 Guardian is a portable app: its config, log and crash history sit **next to the
@@ -137,6 +141,9 @@ powershell -File build-release.ps1
 
 脚本会把构建产物只放到本项目 `release/` 目录，exe 位于
 `release/guardian-v<版本号>-windows-x86_64.exe`，不会拷到外部目录。
+
+exe 的版本资源由 `Cargo.toml` 自动填充（`assets/guardian.rc` + `build.rs`），
+在「属性 → 详细信息」里能看到，且不会和 crate 版本号脱节。
 
 ### 文件位置
 
