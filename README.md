@@ -30,6 +30,8 @@ window, tray icon, no runtime to install.
   hides it to the tray and keeps guarding.
 - Logon autostart toggle (Windows scheduled task, runs in your desktop session).
 - Exponential backoff: 1s → 2s → 4s … capped at 30s, reset after a healthy run.
+- Config hot reload: hand-edit `guardian.toml` and Guardian picks up changes
+  within a second, no restart needed.
 - Chinese text uses a system font, so the UI is legible on any modern Windows
   without bundling a large font file.
 
@@ -108,6 +110,7 @@ MIT — see [LICENSE](LICENSE).
 - 托盘图标：**显示窗口 / 开机自启 / 退出**；关闭窗口只是缩到托盘，守护继续。
 - 开机自启开关（Windows 计划任务，运行在桌面会话）。
 - 指数退避：1s → 2s → 4s … 封顶 30s，健康运行后重置。
+- 配置热重载：手改 `guardian.toml` 后 1 秒内自动生效，无需重启。
 - 中文使用系统字体渲染，任何现代 Windows 都清晰，无需内置大字体文件。
 
 ### 快速开始

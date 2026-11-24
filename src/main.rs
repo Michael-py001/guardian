@@ -44,6 +44,10 @@ fn crash_path() -> PathBuf { exe_dir().join("crash-history.jsonl") }
 fn log_path() -> PathBuf { exe_dir().join("guardian.log") }
 fn settings_path() -> PathBuf { exe_dir().join("settings.json") }
 
+fn config_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config_path()).ok().and_then(|m| m.modified().ok())
+}
+
 fn load_settings() -> Settings {
     std::fs::read_to_string(settings_path())
         .ok()
@@ -109,6 +113,8 @@ struct GuardianApp {
     autostart: bool,
     toast: Option<String>,
     last_crash_refresh: std::time::Instant,
+    last_config_check: std::time::Instant,
+    last_config_mtime: Option<std::time::SystemTime>,
     tray: Option<TrayState>,
     lang: Lang,
     theme: Theme,
@@ -127,7 +133,10 @@ impl GuardianApp {
             sink: Arc::new(Mutex::new(Vec::new())), selected: None, add: AddDialog::default(),
             watcher_stop: None, pause_handle: None, paused: false,
             autostart: engine::task_installed(), toast: None,
-            last_crash_refresh: std::time::Instant::now(), tray,
+            last_crash_refresh: std::time::Instant::now(),
+            last_config_check: std::time::Instant::now(),
+            last_config_mtime: config_mtime(),
+            tray,
             lang: st.lang, theme: st.theme, font_installed: false,
             about_open: false, search: String::new(), quitting: false, view: View::Overview,
         };
@@ -149,9 +158,35 @@ impl GuardianApp {
 
     fn persist(&mut self) {
         let config = engine::Config { process: self.configs.clone() };
-        if let Err(e) = engine::save_config(&config_path(), &config) {
-            self.toast = Some(strings(self.lang).toast_save_fail.replace("{}", &e.to_string()));
+        match engine::save_config(&config_path(), &config) {
+            Ok(()) => self.last_config_mtime = config_mtime(), // don't reload our own write
+            Err(e) => self.toast = Some(strings(self.lang).toast_save_fail.replace("{}", &e.to_string())),
         }
+    }
+
+    /// Pick up hand-edited guardian.toml without a restart. The GUI calls persist()
+    /// after every change and refreshes the stored mtime, so only external edits land here.
+    fn reload_config_if_changed(&mut self) {
+        if self.last_config_check.elapsed() < std::time::Duration::from_millis(1_000) { return; }
+        self.last_config_check = std::time::Instant::now();
+        let mtime = config_mtime();
+        if mtime == self.last_config_mtime { return; }
+        self.last_config_mtime = mtime;
+        let path = config_path();
+        if !path.exists() {
+            self.configs.clear();
+        } else {
+            match engine::load_config(&path) {
+                Ok(config) => self.configs = config.process,
+                Err(e) => {
+                    self.toast = Some(strings(self.lang).toast_load_fail.replace("{}", &e.to_string()));
+                    return; // keep the current config on bad TOML
+                }
+            }
+        }
+        self.selected = None;
+        self.spawn_watcher();
+        self.toast = Some(strings(self.lang).toast_config_reloaded.to_string());
     }
 
     fn persist_settings(&mut self) {
@@ -535,6 +570,8 @@ impl eframe::App for GuardianApp {
             self.add.open = false;
             self.about_open = false;
         }
+
+        self.reload_config_if_changed();
 
         if let Ok(s) = self.sink.lock() { self.statuses = s.clone(); }
         if self.last_crash_refresh.elapsed() >= std::time::Duration::from_millis(500) {

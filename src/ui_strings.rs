@@ -165,6 +165,7 @@ pub struct Str {
     pub toast_resumed: &'static str,
     pub toast_restarted: &'static str,
     pub toast_history_cleared: &'static str,
+    pub toast_config_reloaded: &'static str,
 }
 
 pub fn strings(lang: Lang) -> &'static Str {
@@ -289,6 +290,7 @@ static ZH: Str = Str {
     toast_resumed: "守护已恢复",
     toast_restarted: "已重启全部守护进程",
     toast_history_cleared: "崩溃历史已清空",
+    toast_config_reloaded: "配置已更新，守护已重新加载",
 };
 
 static EN: Str = Str {
@@ -406,6 +408,7 @@ static EN: Str = Str {
     toast_resumed: "Guarding resumed",
     toast_restarted: "All guarded processes restarted",
     toast_history_cleared: "Crash history cleared",
+    toast_config_reloaded: "Config updated, guarding reloaded",
 };
 
 #[cfg(test)]
