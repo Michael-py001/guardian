@@ -47,7 +47,6 @@ impl Default for Settings {
 /// All UI text in one place so adding a language is mechanical.
 pub struct Str {
     pub app_title: &'static str,
-    pub title: &'static str,
     pub guarding: &'static str,
     pub total: &'static str,
     pub restarts_total: &'static str,
@@ -57,6 +56,12 @@ pub struct Str {
     pub note_backoff: &'static str,
     pub note_crash_cluster: &'static str, // template: "{} within 20 minutes"
     pub live_active: &'static str,
+    pub brand_name: &'static str,
+    pub brand_scope: &'static str,
+    pub win_minimize: &'static str,
+    pub win_maximize: &'static str,
+    pub win_restore: &'static str,
+    pub win_close: &'static str,
     pub view_all: &'static str,
     pub showing_latest: &'static str, // template: "Showing latest {} (of total)"
     pub subtitle_running: &'static str, // template: "3 of 5 entries are running"
@@ -178,7 +183,6 @@ pub fn strings(lang: Lang) -> &'static Str {
 
 static ZH: Str = Str {
     app_title: "Guardian 进程守护",
-    title: "Guardian 进程守护",
     guarding: "守护中",
     total: "总计",
     restarts_total: "累计重启",
@@ -188,6 +192,12 @@ static ZH: Str = Str {
     note_backoff: "指数退避 1s → 30s",
     note_crash_cluster: "{} 次集中在 20 分钟内",
     live_active: "守护运行中",
+    brand_name: "Guardian",
+    brand_scope: "可视化进程守护",
+    win_minimize: "最小化到托盘",
+    win_maximize: "最大化",
+    win_restore: "还原",
+    win_close: "关闭",
     view_all: "查看全部 →",
     showing_latest: "仅显示最近 {} 条",
     subtitle_running: "{} 个正在运行 / 共 {} 个守护项",
@@ -297,7 +307,6 @@ static ZH: Str = Str {
 
 static EN: Str = Str {
     app_title: "Guardian — Process Watch",
-    title: "Guardian — Process Watch",
     guarding: "Guarding",
     total: "Total",
     restarts_total: "Restarts",
@@ -307,6 +316,12 @@ static EN: Str = Str {
     note_backoff: "Exponential backoff 1s -> 30s",
     note_crash_cluster: "{} within 20 minutes",
     live_active: "Guarding is active",
+    brand_name: "Guardian",
+    brand_scope: "Process Watch",
+    win_minimize: "Minimize to tray",
+    win_maximize: "Maximize",
+    win_restore: "Restore",
+    win_close: "Close",
     view_all: "View all →",
     showing_latest: "Showing latest {}",
     subtitle_running: "{} of {} entries are running",
@@ -422,8 +437,8 @@ mod tests {
     fn both_languages_are_complete() {
         let zh = strings(Lang::Zh);
         let en = strings(Lang::En);
-        assert!(zh.title.contains("进程守护"));
-        assert!(en.title.contains("Process Watch"));
+        assert!(zh.app_title.contains("进程守护"));
+        assert!(en.app_title.contains("Process Watch"));
         assert_ne!(zh.empty_title, en.empty_title);
         assert_ne!(zh.add_button, en.add_button);
         assert_ne!(zh.menu_file, en.menu_file);

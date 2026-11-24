@@ -630,19 +630,20 @@ impl eframe::App for GuardianApp {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "◈",
                     egui::FontId::proportional(14.0), p.accent);
-                ui.label(egui::RichText::new(s.app_title).size(12.0).strong().color(p.ink));
+                ui.label(egui::RichText::new(s.brand_name).size(12.0).strong().color(p.ink));
+                ui.label(egui::RichText::new(s.brand_scope).size(11.0).color(p.muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let btn = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
                         let r = ui.add_sized([30.0, 30.0], egui::Button::new(
                             egui::RichText::new(glyph).size(12.0).color(p.muted)).frame(false));
                         r.on_hover_text(tip).clicked()
                     };
-                    if btn(ui, "✕", s.menu_quit) { self.quit(ctx); }
-                    if btn(ui, "□", s.title) {
-                        let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    if btn(ui, "✕", s.win_close) { self.quit(ctx); }
+                    let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    if btn(ui, "□", if max { s.win_restore } else { s.win_maximize }) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
                     }
-                    if btn(ui, "─", s.menu_minimize_tray) {
+                    if btn(ui, "─", s.win_minimize) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
                     ui.add_space(10.0);
@@ -776,7 +777,7 @@ impl eframe::App for GuardianApp {
             // Title row: heading + finding + prominent actions (matches prototype).
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.heading(egui::RichText::new(s.title).size(24.0).color(p.ink));
+                    ui.heading(egui::RichText::new(s.nav_overview).size(24.0).color(p.ink));
                     let running_fmt = fill2(s.subtitle_running, &running.to_string(), &self.configs.len().to_string());
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(running_fmt).size(12.0).color(p.muted));
