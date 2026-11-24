@@ -26,6 +26,22 @@ fn fill2(template: &str, first: &str, second: &str) -> String {
     template.replacen("{}", first, 1).replacen("{}", second, 1)
 }
 
+/// Seconds to the prototype's "HH:MM:SS" uptime label.
+fn format_hms(secs: u64) -> String {
+    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+/// Format one crash-history row with the app's bilingual template.
+fn crash_line_text(template: &str, c: &CrashEntry) -> String {
+    template
+        .replace("{t}", &c.time)
+        .replace("{p}", &c.process)
+        .replace("{pid}", &c.pid.to_string())
+        .replace("{code}", &c.exit_code)
+        .replace("{up}", &format_hms(c.uptime_secs))
+        .replace("{n}", &c.restart_number.to_string())
+}
+
 /// Seconds to a compact "14h 22m" / "41s" label, like the prototype's uptime figures.
 fn format_duration(secs: u64) -> String {
     let h = secs / 3600;
@@ -412,11 +428,8 @@ impl GuardianApp {
                 ui.label(egui::RichText::new(s.history_empty).size(12.0).color(p.muted));
             } else {
                 for c in self.crashes.iter().rev() {
-                    ui.label(egui::RichText::new(s.crash_line
-                        .replace("{t}", &c.time).replace("{p}", &c.process)
-                        .replace("{pid}", &c.pid.to_string()).replace("{code}", &c.exit_code)
-                        .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string())
-                    ).size(12.0).color(p.ink));
+                    ui.label(egui::RichText::new(crash_line_text(s.crash_line, c))
+                        .size(12.0).color(p.ink));
                 }
             }
         });
@@ -978,11 +991,8 @@ impl eframe::App for GuardianApp {
                         ui.label(egui::RichText::new(s.no_crashes).size(12.0).color(p.muted));
                     } else {
                         for c in self.crashes.iter().rev().take(6) {
-                            ui.label(egui::RichText::new(s.crash_line
-                                .replace("{t}", &c.time).replace("{p}", &c.process)
-                                .replace("{pid}", &c.pid.to_string()).replace("{code}", &c.exit_code)
-                                .replace("{up}", &c.uptime_secs.to_string()).replace("{n}", &c.restart_number.to_string())
-                            ).size(11.0).color(p.muted));
+                            ui.label(egui::RichText::new(crash_line_text(s.crash_line, c))
+                                .size(11.0).color(p.muted));
                         }
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
@@ -1115,13 +1125,24 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod close_tests {
-    use super::{fill2, format_duration, should_minimize_to_tray};
+    use super::{CrashEntry, fill2, format_duration, format_hms, should_minimize_to_tray};
 
     #[test]
     fn duration_formats_match_prototype() {
         assert_eq!(format_duration(41), "41s");
         assert_eq!(format_duration(537), "8m 57s");
         assert_eq!(format_duration(14 * 3600 + 22 * 60), "14h 22m");
+        assert_eq!(format_hms(161), "00:02:41");
+    }
+
+    #[test]
+    fn crash_line_uses_clock_uptime() {
+        let c = CrashEntry {
+            time: "14:51:07".into(), process: "app.exe".into(), pid: 1936,
+            exit_code: "1".into(), uptime_secs: 161, restart_number: 6,
+        };
+        let line = super::crash_line_text("exit={code} uptime={up} restart#{n}", &c);
+        assert_eq!(line, "exit=1 uptime=00:02:41 restart#6");
     }
 
     #[test]
