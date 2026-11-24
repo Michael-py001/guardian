@@ -138,6 +138,7 @@ struct GuardianApp {
     paused: bool,
     autostart: bool,
     toast: Option<String>,
+    toast_at: std::time::Instant,
     last_crash_refresh: std::time::Instant,
     last_config_check: std::time::Instant,
     last_config_mtime: Option<std::time::SystemTime>,
@@ -158,7 +159,7 @@ impl GuardianApp {
             configs: Vec::new(), statuses: Vec::new(), crashes: Vec::new(),
             sink: Arc::new(Mutex::new(Vec::new())), selected: None, add: AddDialog::default(),
             watcher_stop: None, config_tx: None, pause_handle: None, paused: false,
-            autostart: engine::task_installed(), toast: None,
+            autostart: engine::task_installed(), toast: None, toast_at: std::time::Instant::now(),
             last_crash_refresh: std::time::Instant::now(),
             last_config_check: std::time::Instant::now(),
             last_config_mtime: config_mtime(),
@@ -176,7 +177,7 @@ impl GuardianApp {
         if path.exists() {
             match engine::load_config(&path) {
                 Ok(config) => self.configs = config.process,
-                Err(e) => self.toast = Some(strings(self.lang).toast_load_fail.replace("{}", &e.to_string())),
+                Err(e) => self.set_toast(strings(self.lang).toast_load_fail.replace("{}", &e.to_string())),
             }
         }
         self.crashes = engine::read_crash_history(&crash_path());
@@ -186,7 +187,7 @@ impl GuardianApp {
         let config = engine::Config { process: self.configs.clone() };
         match engine::save_config(&config_path(), &config) {
             Ok(()) => self.last_config_mtime = config_mtime(), // don't reload our own write
-            Err(e) => self.toast = Some(strings(self.lang).toast_save_fail.replace("{}", &e.to_string())),
+            Err(e) => self.set_toast(strings(self.lang).toast_save_fail.replace("{}", &e.to_string())),
         }
     }
 
@@ -205,14 +206,19 @@ impl GuardianApp {
             match engine::load_config(&path) {
                 Ok(config) => self.configs = config.process,
                 Err(e) => {
-                    self.toast = Some(strings(self.lang).toast_load_fail.replace("{}", &e.to_string()));
+                    self.set_toast(strings(self.lang).toast_load_fail.replace("{}", &e.to_string()));
                     return; // keep the current config on bad TOML
                 }
             }
         }
         self.selected = None;
         self.apply_config();
-        self.toast = Some(strings(self.lang).toast_config_reloaded.to_string());
+        self.set_toast(strings(self.lang).toast_config_reloaded.to_string());
+    }
+
+    fn set_toast(&mut self, text: impl Into<String>) {
+        self.toast = Some(text.into());
+        self.toast_at = std::time::Instant::now();
     }
 
     fn persist_settings(&mut self) {
@@ -254,18 +260,18 @@ impl GuardianApp {
         }
         let st = strings(self.lang);
         if let Err(e) = cfg.validate() {
-            self.toast = Some(st.toast_add_fail.replace("{}", &e.to_string())); return;
+            self.set_toast(st.toast_add_fail.replace("{}", &e.to_string())); return;
         }
         self.configs.push(cfg);
         self.add.open = false;
         self.add.name.clear(); self.add.command.clear(); self.add.args.clear();
         self.persist(); self.apply_config();
-        self.toast = Some(st.toast_added.to_string());
+        self.set_toast(st.toast_added.to_string());
     }
 
     fn add_from_process(&mut self) {
         let Some(idx) = self.add.selected else {
-            self.toast = Some(strings(self.lang).toast_select_first.to_string()); return;
+            self.set_toast(strings(self.lang).toast_select_first.to_string()); return;
         };
         let Some(proc) = self.add.processes.get(idx).cloned() else { return };
         let name = PathBuf::from(&proc.name).file_stem()
@@ -275,12 +281,12 @@ impl GuardianApp {
         cfg.adopt = Some(proc.name);
         let st = strings(self.lang);
         if let Err(e) = cfg.validate() {
-            self.toast = Some(st.toast_add_fail.replace("{}", &e.to_string())); return;
+            self.set_toast(st.toast_add_fail.replace("{}", &e.to_string())); return;
         }
         self.configs.push(cfg);
         self.add.open = false; self.add.selected = None;
         self.persist(); self.apply_config();
-        self.toast = Some(st.toast_adopted.to_string());
+        self.set_toast(st.toast_adopted.to_string());
     }
 
     fn remove_selected(&mut self) {
@@ -288,14 +294,14 @@ impl GuardianApp {
             if idx < self.configs.len() { self.configs.remove(idx); }
             self.selected = None;
             self.persist(); self.apply_config();
-            self.toast = Some(strings(self.lang).toast_removed.to_string());
+            self.set_toast(strings(self.lang).toast_removed.to_string());
         }
     }
 
     fn toggle_pause(&mut self) {
         self.paused = !self.paused;
         if let Some(h) = &self.pause_handle { h.store(self.paused, Ordering::SeqCst); }
-        self.toast = Some(if self.paused {
+        self.set_toast(if self.paused {
             strings(self.lang).toast_paused.to_string()
         } else {
             strings(self.lang).toast_resumed.to_string()
@@ -304,7 +310,7 @@ impl GuardianApp {
 
     fn restart_all(&mut self) {
         self.spawn_watcher();
-        self.toast = Some(strings(self.lang).toast_restarted.to_string());
+        self.set_toast(strings(self.lang).toast_restarted.to_string());
     }
 
     fn toggle_autostart(&mut self) {
@@ -315,9 +321,9 @@ impl GuardianApp {
         match result {
             Ok(()) => {
                 self.autostart = engine::task_installed();
-                self.toast = Some(if self.autostart { st.toast_auto_on.to_string() } else { st.toast_auto_off.to_string() });
+                self.set_toast(if self.autostart { st.toast_auto_on.to_string() } else { st.toast_auto_off.to_string() });
             }
-            Err(e) => self.toast = Some(st.toast_auto_fail.replace("{}", &e.to_string())),
+            Err(e) => self.set_toast(st.toast_auto_fail.replace("{}", &e.to_string())),
         }
     }
 
@@ -329,7 +335,7 @@ impl GuardianApp {
     fn clear_history(&mut self) {
         let _ = engine::clear_crash_history(&crash_path());
         self.crashes.clear();
-        self.toast = Some(strings(self.lang).toast_history_cleared.to_string());
+        self.set_toast(strings(self.lang).toast_history_cleared.to_string());
     }
 
     fn open_folder(&mut self) {
@@ -614,6 +620,12 @@ impl eframe::App for GuardianApp {
         if esc {
             self.add.open = false;
             self.about_open = false;
+        }
+
+        // Toasts are ephemeral; clear any that have been on screen for 5 seconds.
+        // set_toast() refreshes toast_at whenever a new message arrives.
+        if self.toast_at.elapsed() >= std::time::Duration::from_secs(5) {
+            self.toast = None;
         }
 
         self.reload_config_if_changed();
