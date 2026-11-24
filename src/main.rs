@@ -737,8 +737,8 @@ impl eframe::App for GuardianApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Views other than Overview get their own body.
             match self.view {
-                View::Processes => { self.draw_processes(ui); return; }
-                View::History => { self.draw_history(ui); return; }
+                View::Processes => { egui::ScrollArea::vertical().show(ui, |ui| self.draw_processes(ui)); return; }
+                View::History => { egui::ScrollArea::vertical().show(ui, |ui| self.draw_history(ui)); return; }
                 View::Settings => { self.draw_settings(ui, ctx); return; }
                 View::Overview => {}
             }
