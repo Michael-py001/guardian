@@ -139,7 +139,6 @@ pub struct Str {
     pub paused: &'static str,
     pub crash_history: &'static str,
     pub crash_count: &'static str,
-    pub crash_line: &'static str,
     pub event_exit: &'static str,
     pub event_uptime: &'static str,
     pub event_restart: &'static str, // template: "restart #{}"
@@ -280,7 +279,6 @@ static ZH: Str = Str {
     paused: "已暂停",
     crash_history: "崩溃历史",
     crash_count: "条退出记录",
-    crash_line: "{t}  {p}  PID={pid}  退出码={code}  存活={up}  第{n}次重启",
     event_exit: "退出码",
     event_uptime: "存活",
     event_restart: "第 {} 次重启",
@@ -412,7 +410,6 @@ static EN: Str = Str {
     paused: "paused",
     crash_history: "Crash history",
     crash_count: "recorded exits",
-    crash_line: "{t}  {p}  PID={pid}  exit={code}  uptime={up}  restart#{n}",
     event_exit: "exit",
     event_uptime: "uptime",
     event_restart: "restart #{}",
