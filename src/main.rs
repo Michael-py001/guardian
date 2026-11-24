@@ -213,11 +213,25 @@ impl GuardianApp {
         r.clicked()
     }
 
+    /// Paint a card surface across the full column at an exact height, then lay out
+    /// its contents inside. Frames size to their content, which makes neighbouring
+    /// cards ragged; this keeps every card in a band on the same baseline.
+    fn card_surface(ui: &mut egui::Ui, height: f32, p: &ui::Palette, add_contents: impl FnOnce(&mut egui::Ui)) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 6.0, p.surface);
+        ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+        let inner = rect.shrink2(egui::vec2(14.0, 12.0));
+        // new_child does not advance the parent cursor — allocate_exact_size already did.
+        let mut child = ui.new_child(
+            egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
+        add_contents(&mut child);
+    }
+
     /// Render the restart-trend card, filling the width it is given.
-    fn draw_trend_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+    fn draw_trend_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
         let (trend_values, trend_labels) = self.trend_data();
-        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+        Self::card_surface(ui, height, p, |ui| {
                 ui.label(egui::RichText::new(s.chart_restart_trend).size(14.0).strong().color(p.ink));
                 ui.label(egui::RichText::new(s.chart_trend_meta).size(11.0).color(p.muted));
                 ui.add_space(4.0);
@@ -241,11 +255,10 @@ impl GuardianApp {
     }
 
     /// Render the uptime-health card, filling the width it is given.
-    fn draw_health_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+    fn draw_health_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
         let health = self.health_ratio();
         let h_stopped = self.offline_count();
-        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+        Self::card_surface(ui, height, p, |ui| {
                 ui.label(egui::RichText::new(s.chart_uptime).size(14.0).strong().color(p.ink));
                 ui.label(egui::RichText::new(s.chart_uptime_meta).size(11.0).color(p.muted));
                 ui.add_space(6.0);
@@ -281,10 +294,9 @@ impl GuardianApp {
     }
 
     /// Render the restart-pulse card (signature view).
-    fn draw_pulse_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+    fn draw_pulse_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
         let pulse = self.pulse_data();
-        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+        Self::card_surface(ui, height, p, |ui| {
                 ui.label(egui::RichText::new(s.chart_pulse).size(14.0).strong().color(p.ink));
                 ui.label(egui::RichText::new(s.chart_pulse_meta).size(11.0).color(p.muted));
                 ui.horizontal(|ui| {
@@ -306,13 +318,12 @@ impl GuardianApp {
     }
 
     /// Guarded-process table. Always shows its frame and header, even when empty.
-    fn draw_guard_table(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+    fn draw_guard_table(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
         let filter = self.search.to_lowercase();
         let visible: Vec<usize> = (0..self.configs.len())
             .filter(|&i| filter.is_empty() || self.configs[i].name.to_lowercase().contains(&filter))
             .collect();
-        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 10.0)).show(ui, |ui| {
+        Self::card_surface(ui, height, p, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(s.nav_processes).size(14.0).strong().color(p.ink));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -369,19 +380,8 @@ impl GuardianApp {
     }
 
     /// Crash-history card with structured event rows and a footer.
-    fn draw_crash_card(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
-        // A Frame sizes itself to its content, so a short (or empty) crash list
-        // renders as a narrow card. Draw the surface/border ourselves across the
-        // full available width, then lay out the content inside it.
-        let outer = ui.available_width();
-        // Reserve a rect as tall as the content will be: header + up to 6 event rows + footer.
-        let shown = self.crashes.len().min(6);
-        let h = if shown == 0 { 78.0 } else { 70.0 + shown as f32 * 44.0 + 26.0 };
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(outer, h), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 6.0, p.surface);
-        ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
-        let inner = rect.shrink(14.0);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::LEFT)), |ui| {
+    fn draw_crash_card(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
+        Self::card_surface(ui, height, p, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(s.crash_history).size(14.0).strong().color(p.ink));
                     ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(11.0).color(p.muted));
@@ -1054,52 +1054,64 @@ impl eframe::App for GuardianApp {
             }
             ui.add_space(10.0);
 
-            // ---- Chart band: two equal columns, each filling its half ----
+            // Both bands share one column ratio so the divider lines up, and every
+            // card is given an exact height so the two sides end on the same baseline.
             let gap = 16.0_f32;
             let band_w = ui.available_width();
-            let col_w = (band_w - gap) / 2.0;
+            let left_w = (band_w - gap) * 0.62;
+            let right_w = band_w - gap - left_w;
+            let chart_h = 224.0_f32;
+
+            // ---- Chart band: restart trend left, uptime health right ----
             if band_w >= 720.0 {
                 ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(col_w);
-                        self.draw_trend_card(ui, s, &p);
+                    ui.allocate_ui_with_layout(egui::vec2(left_w, chart_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(left_w);
+                        self.draw_trend_card(ui, s, &p, chart_h);
                     });
                     ui.add_space(gap);
-                    ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(col_w);
-                        self.draw_health_card(ui, s, &p);
+                    ui.allocate_ui_with_layout(egui::vec2(right_w, chart_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(right_w);
+                        self.draw_health_card(ui, s, &p, chart_h);
                     });
                 });
             } else {
-                self.draw_trend_card(ui, s, &p);
+                self.draw_trend_card(ui, s, &p, chart_h);
                 ui.add_space(gap);
-                self.draw_health_card(ui, s, &p);
+                self.draw_health_card(ui, s, &p, chart_h);
             }
             ui.add_space(16.0);
 
-            // ---- Bottom band: guard table left; crash history + pulse stacked right ----
+            // ---- Bottom band: guard table left; pulse + crash history stacked right ----
+            let rows = self.configs.iter().filter(|c| self.search.is_empty()
+                || c.name.to_lowercase().contains(&self.search.to_lowercase())).count();
+            let table_h = (110.0 + rows as f32 * 24.0
+                + if self.configs.is_empty() { 40.0 } else { 0.0 }).max(210.0);
+            let pulse_h = self.pulse_data().len() as f32 * 22.0 + 28.0 + 92.0;
+            let shown_crashes = self.crashes.len().min(6);
+            let crash_min = if shown_crashes == 0 { 78.0 } else { 96.0 + shown_crashes as f32 * 44.0 };
+            let bottom_h = table_h.max(pulse_h + gap + crash_min);
+            let crash_h = bottom_h - pulse_h - gap;
             if band_w >= 720.0 {
-                let table_w = (band_w - gap) * 0.62;
-                let side_w = band_w - gap - table_w;
                 ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(egui::vec2(table_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(table_w);
-                        self.draw_guard_table(ui, s, &p);
+                    ui.allocate_ui_with_layout(egui::vec2(left_w, bottom_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(left_w);
+                        self.draw_guard_table(ui, s, &p, bottom_h);
                     });
                     ui.add_space(gap);
-                    ui.allocate_ui_with_layout(egui::vec2(side_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(side_w);
-                        self.draw_pulse_card(ui, s, &p);
+                    ui.allocate_ui_with_layout(egui::vec2(right_w, bottom_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(right_w);
+                        self.draw_pulse_card(ui, s, &p, pulse_h);
                         ui.add_space(gap);
-                        self.draw_crash_card(ui, s, &p);
+                        self.draw_crash_card(ui, s, &p, crash_h);
                     });
                 });
             } else {
-                self.draw_guard_table(ui, s, &p);
+                self.draw_guard_table(ui, s, &p, bottom_h);
                 ui.add_space(gap);
-                self.draw_pulse_card(ui, s, &p);
+                self.draw_pulse_card(ui, s, &p, pulse_h);
                 ui.add_space(gap);
-                self.draw_crash_card(ui, s, &p);
+                self.draw_crash_card(ui, s, &p, crash_h);
             }
             }); // ScrollArea
         }); // CentralPanel
