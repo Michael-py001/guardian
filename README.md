@@ -51,6 +51,10 @@ cargo build --release
 .\target\release\guardian.exe
 ```
 
+The Windows Explorer / taskbar icon is embedded from `assets/guardian.ico` at
+build time. To regenerate it after changing the design: `python assets/make_icon.py`
+(needs Pillow), then rebuild.
+
 ## Where files live
 
 Guardian is a portable app: its config, log and crash history sit **next to the
