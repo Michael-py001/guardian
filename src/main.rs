@@ -1200,9 +1200,11 @@ impl eframe::App for GuardianApp {
                         ));
                     });
                     ui.add_space(8.0);
-                    // Plain button (not right_to_left): that layout fills the whole
-                    // available height and centres the button, inflating the dialog.
-                    if ui.button(s.close).clicked() { close_clicked = true; }
+                    // Vertical centered layout keeps the button horizontally centred
+                    // without the height inflation a right_to_left row caused.
+                    ui.vertical_centered(|ui| {
+                        if ui.button(s.close).clicked() { close_clicked = true; }
+                    });
                 });
             let _ = response;
             self.about_open = open && !close_clicked;
