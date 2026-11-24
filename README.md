@@ -37,7 +37,7 @@ window, tray icon, no runtime to install.
 
 ## Quick start
 
-Download `guardian-vX.Y.Z-windows-x86_64.zip` (e.g. `guardian-v0.3.0-windows-x86_64.zip`) from
+Download `guardian-vX.Y.Z-windows-x86_64.zip` (e.g. `guardian-v0.3.1-windows-x86_64.zip`) from
 [Releases](https://github.com/Michael-py001/guardian/releases), extract it and
 run `guardian.exe`. A window appears — no console, no setup.
 
@@ -47,12 +47,16 @@ starts watching it immediately.
 To build from source (Rust + MSVC build tools):
 
 ```powershell
-cargo build --release
-.\target\release\guardian.exe
+powershell -File build-release.ps1
 ```
 
-The Windows Explorer / taskbar icon is embedded from `assets/guardian.ico` at
-build time. To regenerate it after changing the design: `python assets/make_icon.py`
+The script builds and stages everything under `./release/` only — the exe lands
+at `release/guardian-v<version>-windows-x86_64.exe`. Local build products never go
+to any external folder.
+
+The Explorer / taskbar / tray icon and the in-app titlebar logo all come from
+`assets/guardian.ico` (a transparent shield, no dark border), embedded at build
+time. To regenerate after changing the design: `python assets/make_icon.py`
 (needs Pillow), then rebuild.
 
 ## Where files live
@@ -120,7 +124,7 @@ MIT — see [LICENSE](LICENSE).
 ### 快速开始
 
 从 [Releases](https://github.com/Michael-py001/guardian/releases) 下载
-`guardian-vX.Y.Z-windows-x86_64.zip`（如 `guardian-v0.3.0-windows-x86_64.zip`），解压后运行 `guardian.exe`。直接出现窗口——
+`guardian-vX.Y.Z-windows-x86_64.zip`（如 `guardian-v0.3.1-windows-x86_64.zip`），解压后运行 `guardian.exe`。直接出现窗口——
 没有控制台，无需安装。
 
 点 **Add entry**，选一个可执行文件（或运行中的进程），Guardian 立即开始守护。
@@ -128,9 +132,11 @@ MIT — see [LICENSE](LICENSE).
 源码编译（需要 Rust + MSVC 构建工具）：
 
 ```powershell
-cargo build --release
-.\target\release\guardian.exe
+powershell -File build-release.ps1
 ```
+
+脚本会把构建产物只放到本项目 `release/` 目录，exe 位于
+`release/guardian-v<版本号>-windows-x86_64.exe`，不会拷到外部目录。
 
 ### 文件位置
 
