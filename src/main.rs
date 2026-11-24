@@ -214,6 +214,43 @@ impl GuardianApp {
         self.set_toast(strings(self.lang).toast_config_reloaded.to_string());
     }
 
+    /// Frameless windows have no OS resize border. Detect the pointer near an edge
+    /// and forward the drag to the backend via BeginResize so the window can still
+    /// be resized from any side or corner.
+    fn resize_edges(&self, ctx: &egui::Context) {
+        use egui::viewport::ResizeDirection::{East, North, NorthEast, NorthWest, South, SouthEast, SouthWest, West};
+        let t = 7.0_f32; // grab thickness in points
+        let dir = ctx.input(|i| {
+            let pointer = &i.pointer;
+            let Some(pos) = pointer.hover_pos() else { return None };
+            let r = i.screen_rect();
+            let near_l = pos.x <= r.left() + t;
+            let near_r = pos.x >= r.right() - t;
+            let near_t = pos.y <= r.top() + t;
+            let near_b = pos.y >= r.bottom() - t;
+            if near_t && near_l { Some(NorthWest) }
+            else if near_t && near_r { Some(NorthEast) }
+            else if near_b && near_l { Some(SouthWest) }
+            else if near_b && near_r { Some(SouthEast) }
+            else if near_l { Some(West) }
+            else if near_r { Some(East) }
+            else if near_t { Some(North) }
+            else if near_b { Some(South) }
+            else { None }
+        });
+        if let Some(dir) = dir {
+            ctx.set_cursor_icon(match dir {
+                NorthWest | SouthEast => egui::CursorIcon::ResizeNwSe,
+                NorthEast | SouthWest => egui::CursorIcon::ResizeNeSw,
+                West | East => egui::CursorIcon::ResizeHorizontal,
+                North | South => egui::CursorIcon::ResizeVertical,
+            });
+            if ctx.input(|i| i.pointer.primary_pressed()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+            }
+        }
+    }
+
     /// A text button with a leading vector icon.
     fn icon_button(ui: &mut egui::Ui, kind: ui::Icon, label: &str, color: egui::Color32) -> bool {
         let r = ui.button(egui::RichText::new(format!("  {}", label)).size(12.0));
@@ -841,6 +878,10 @@ impl eframe::App for GuardianApp {
         let s = strings(self.lang);
         let p = ui::palette(self.theme);
 
+        // ---- Frameless window: invisible drag strips on the edges/corners so the
+        // window can still be resized with the mouse (no OS border to grab).
+        self.resize_edges(ctx);
+
         // ---- Custom title bar (frameless window) ----
         egui::TopBottomPanel::top("titlebar").exact_height(34.0).show(ctx, |ui| {
             let response = ui.interact(ui.max_rect(), ui.id().with("drag"), egui::Sense::drag());
@@ -865,7 +906,11 @@ impl eframe::App for GuardianApp {
                         ui::icon_at(ui.painter(), r.rect.center(), icon, col, 12.0);
                         r.on_hover_text(tip).clicked()
                     };
-                    if btn(ui, ui::Icon::Close, s.win_close) { self.quit(ctx); }
+                    // The titlebar X hides to tray; File/Quit and the tray menu's
+                    // Quit are the only paths that actually exit the process.
+                    if btn(ui, ui::Icon::Close, s.win_close) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    }
                     let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                     if btn(ui, if max { ui::Icon::Restore } else { ui::Icon::Maximize },
                            if max { s.win_restore } else { s.win_maximize }) {
@@ -1080,6 +1125,7 @@ impl eframe::App for GuardianApp {
             // ---- Chart band: restart trend left, uptime health right ----
             if band_w >= 720.0 {
                 ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0; // widths already reserve the gap
                     ui.allocate_ui_with_layout(egui::vec2(left_w, chart_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         ui.set_width(left_w);
                         self.draw_trend_card(ui, s, &p, chart_h);
@@ -1109,6 +1155,7 @@ impl eframe::App for GuardianApp {
             let crash_h = bottom_h - pulse_h - gap;
             if band_w >= 720.0 {
                 ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0; // widths already reserve the gap
                     ui.allocate_ui_with_layout(egui::vec2(left_w, bottom_h), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         ui.set_width(left_w);
                         self.draw_guard_table(ui, s, &p, bottom_h);
