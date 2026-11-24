@@ -427,9 +427,26 @@ impl GuardianApp {
             if self.crashes.is_empty() {
                 ui.label(egui::RichText::new(s.history_empty).size(12.0).color(p.muted));
             } else {
-                for c in self.crashes.iter().rev() {
-                    ui.label(egui::RichText::new(crash_line_text(s.crash_line, c))
-                        .size(12.0).color(p.ink));
+                for (i, c) in self.crashes.iter().rev().enumerate() {
+                    if i > 0 { ui.separator(); }
+                    // Prototype's .event: name + time on one row, detail on the next.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&c.process).size(12.5).strong().color(p.ink));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(c.time.clone()).size(10.5).color(p.muted));
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.event_exit).size(11.5).color(p.muted));
+                        ui.label(egui::RichText::new(&c.exit_code).size(11.5).color(p.red));
+                        ui.label(egui::RichText::new("·").size(11.5).color(p.muted));
+                        ui.label(egui::RichText::new(s.event_uptime).size(11.5).color(p.muted));
+                        ui.label(egui::RichText::new(format_hms(c.uptime_secs)).size(11.5).color(p.ink));
+                        ui.label(egui::RichText::new("·").size(11.5).color(p.muted));
+                        ui.label(egui::RichText::new(
+                            s.event_restart.replace("{}", &c.restart_number.to_string())
+                        ).size(11.5).color(p.muted));
+                    });
                 }
             }
         });
