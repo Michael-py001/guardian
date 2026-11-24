@@ -76,6 +76,7 @@ pub struct Str {
     pub chart_uptime_meta: &'static str,
     pub longest_running: &'static str, // template: "Longest running: {} "
     pub health_offline_finding: &'static str, // template: "{n} entries offline too long"
+    pub health_empty: &'static str,
     pub label_online: &'static str,
     pub label_restarting: &'static str,
     pub label_offline: &'static str,
@@ -219,6 +220,7 @@ static ZH: Str = Str {
     chart_uptime_meta: "最近 24 小时",
     longest_running: "最长连续运行：{}",
     health_offline_finding: "{} 个守护项离线时间偏长。",
+    health_empty: "尚未添加守护项，添加后即可查看运行状态。",
     label_online: "在线",
     label_restarting: "重启中",
     label_offline: "离线",
@@ -350,6 +352,7 @@ static EN: Str = Str {
     chart_uptime_meta: "Last 24 hours",
     longest_running: "Longest continuous run: {}",
     health_offline_finding: "{} entries were offline for long.",
+    health_empty: "No guarded entries yet. Add one to see live status.",
     label_online: "Online",
     label_restarting: "Restarting",
     label_offline: "Offline",

@@ -5,6 +5,78 @@
 use eframe::egui::{self, Color32, Pos2, Stroke, Ui, Vec2};
 use crate::ui_strings::Theme;
 
+/// Vector icons drawn from primitives. The CJK system font has no glyphs for the
+/// geometric symbols the prototype uses, so text glyphs render as tofu boxes —
+/// drawing them as shapes is the only reliable fix across Windows fonts.
+#[derive(Debug, Clone, Copy)]
+pub enum Icon {
+    Shield, Grid, List, Clock, Gear, Info, Minimize, Maximize, Restore, Close, Plus,
+}
+
+/// Draw a vector icon centered in `size` x `size` points, allocating its own space.
+pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(size, size), egui::Sense::hover());
+    icon_at(ui.painter(), rect.center(), kind, color, size);
+}
+
+/// Draw a vector icon at an explicit center — lets callers overlay it on a button rect.
+pub fn icon_at(p: &egui::Painter, c: Pos2, kind: Icon, color: Color32, size: f32) {
+    let e = size * 0.5;                 // half extent
+    let st = Stroke::new(1.4_f32, color);
+    let at = |x: f32, y: f32| egui::pos2(c.x + x * e, c.y + y * e);
+    match kind {
+        Icon::Shield => {
+            p.line(vec![at(0.0, -0.9), at(0.7, -0.5), at(0.7, 0.25), at(0.0, 0.9),
+                    at(-0.7, 0.25), at(-0.7, -0.5), at(0.0, -0.9)], st);
+            p.line(vec![at(-0.3, 0.0), at(-0.05, 0.28), at(0.38, -0.3)], st);
+        }
+        Icon::Grid => {
+            for (x, y) in [(-0.55, -0.55), (0.1, -0.55), (-0.55, 0.1), (0.1, 0.1)] {
+                p.rect_stroke(egui::Rect::from_min_max(at(x, y), at(x + 0.45, y + 0.45)), 0.0, st, egui::StrokeKind::Outside);
+            }
+        }
+        Icon::List => {
+            for y in [-0.5, 0.0, 0.5] {
+                p.line_segment([at(-0.7, y), at(0.7, y)], st);
+            }
+            p.circle_filled(at(-0.45, -0.5), size * 0.055, color);
+            p.circle_filled(at(0.2, 0.0), size * 0.055, color);
+        }
+        Icon::Clock => {
+            p.circle_stroke(c, e * 0.78, st);
+            p.line_segment([at(0.0, 0.0), at(0.0, -0.45)], st);
+            p.line_segment([at(0.0, 0.0), at(0.35, 0.22)], st);
+        }
+        Icon::Gear => {
+            p.circle_stroke(c, e * 0.45, st);
+            for i in 0..8 {
+                let a = std::f32::consts::FRAC_PI_4 * i as f32;
+                let (sx, sy) = (a.cos(), a.sin());
+                p.line_segment([at(sx * 0.6, sy * 0.6), at(sx * 0.9, sy * 0.9)], st);
+            }
+        }
+        Icon::Info => {
+            p.circle_stroke(c, e * 0.8, st);
+            p.circle_filled(at(0.0, -0.42), size * 0.06, color);
+            p.line_segment([at(0.0, -0.15), at(0.0, 0.5)], st);
+        }
+        Icon::Minimize => { p.line_segment([at(-0.6, 0.0), at(0.6, 0.0)], st); }
+        Icon::Maximize => { p.rect_stroke(egui::Rect::from_min_max(at(-0.6, -0.6), at(0.6, 0.6)), 0.0, st, egui::StrokeKind::Outside); }
+        Icon::Restore => {
+            p.rect_stroke(egui::Rect::from_min_max(at(-0.6, -0.35), at(0.35, 0.6)), 0.0, st, egui::StrokeKind::Outside);
+            p.rect_stroke(egui::Rect::from_min_max(at(-0.35, -0.6), at(0.6, 0.35)), 0.0, st, egui::StrokeKind::Outside);
+        }
+        Icon::Close => {
+            p.line_segment([at(-0.5, -0.5), at(0.5, 0.5)], st);
+            p.line_segment([at(0.5, -0.5), at(-0.5, 0.5)], st);
+        }
+        Icon::Plus => {
+            p.line_segment([at(-0.55, 0.0), at(0.55, 0.0)], st);
+            p.line_segment([at(0.0, -0.55), at(0.0, 0.55)], st);
+        }
+    }
+}
+
 /// One theme's worth of colour roles.
 pub struct Palette {
     pub surface: Color32,
@@ -67,6 +139,11 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
     visuals.window_fill = ground(theme);
     visuals.widgets.noninteractive.bg_fill = p.surface;
     visuals.widgets.noninteractive.fg_stroke.color = p.ink;
+    // Rounded corners everywhere the prototype shows pills/buttons.
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
     // ponytail: one stroke width for all noninteractive text; no per-role tuning needed.
     ctx.set_visuals(visuals);
 }

@@ -205,6 +205,199 @@ impl GuardianApp {
         self.set_toast(strings(self.lang).toast_config_reloaded.to_string());
     }
 
+    /// A text button with a leading vector icon.
+    fn icon_button(ui: &mut egui::Ui, kind: ui::Icon, label: &str, color: egui::Color32) -> bool {
+        let r = ui.button(egui::RichText::new(format!("  {}", label)).size(12.0));
+        let ic = r.rect.left() + 9.0;
+        ui::icon_at(ui.painter(), egui::pos2(ic, r.rect.center().y), kind, color, 12.0);
+        r.clicked()
+    }
+
+    /// Render the restart-trend card, filling the width it is given.
+    fn draw_trend_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+        let (trend_values, trend_labels) = self.trend_data();
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+                ui.label(egui::RichText::new(s.chart_restart_trend).size(14.0).strong().color(p.ink));
+                ui.label(egui::RichText::new(s.chart_trend_meta).size(11.0).color(p.muted));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let sw = ui.cursor().min;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(sw + egui::vec2(0.0, 3.0), egui::vec2(8.0, 8.0)), 2.0, p.accent);
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(s.legend_all_entries).size(11.0).color(p.muted));
+                });
+                ui.add_space(2.0);
+                let peak_note = trend_values.iter().enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .filter(|(_, v)| **v > 0.0)
+                    .map(|(i, v)| {
+                        let hour = trend_labels.get(i).and_then(|l| l.split(':').next()).unwrap_or("");
+                        s.trend_peak.replace("{}", &format!("{:.0}", v)).replacen("{}", hour, 1)
+                    });
+                ui::line_chart(ui, self.theme, &trend_values, &trend_labels, peak_note.as_deref());
+            });
+    }
+
+    /// Render the uptime-health card, filling the width it is given.
+    fn draw_health_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+        let health = self.health_ratio();
+        let h_stopped = self.offline_count();
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+                ui.label(egui::RichText::new(s.chart_uptime).size(14.0).strong().color(p.ink));
+                ui.label(egui::RichText::new(s.chart_uptime_meta).size(11.0).color(p.muted));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui::ring_chart(ui, self.theme, health, s.ring_online_rate);
+                    ui.add_space(6.0);
+                    ui.vertical(|ui| {
+                        let online_secs = self.statuses.iter().filter(|x| x.running)
+                            .map(|x| x.uptime_secs).max().unwrap_or(0);
+                        ui.label(egui::RichText::new(format!("{}  {}", s.label_online,
+                            format_duration(online_secs))).size(11.0).color(p.green));
+                        let restarting = self.statuses.iter().filter(|x| x.restarting).count();
+                        ui.label(egui::RichText::new(format!("{}  {}", s.label_restarting,
+                            restarting)).size(11.0).color(p.amber));
+                        ui.label(egui::RichText::new(format!("{}  {}", s.label_offline,
+                            h_stopped)).size(11.0).color(p.red));
+                    });
+                });
+                // Finding always occupies the footer so the card never leaves a blank gap.
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+                if let Some(longest) = self.statuses.iter().filter(|x| x.running).max_by_key(|x| x.uptime_secs) {
+                    ui.label(egui::RichText::new(s.longest_running.replace("{}", &format_duration(longest.uptime_secs)))
+                        .size(11.0).color(p.muted));
+                } else if h_stopped > 0 {
+                    ui.label(egui::RichText::new(s.health_offline_finding.replace("{}", &h_stopped.to_string()))
+                        .size(11.0).color(p.muted));
+                } else {
+                    ui.label(egui::RichText::new(s.health_empty).size(11.0).color(p.muted));
+                }
+            });
+    }
+
+    /// Render the restart-pulse card (signature view).
+    fn draw_pulse_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+        let pulse = self.pulse_data();
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 12.0)).show(ui, |ui| {
+                ui.label(egui::RichText::new(s.chart_pulse).size(14.0).strong().color(p.ink));
+                ui.label(egui::RichText::new(s.chart_pulse_meta).size(11.0).color(p.muted));
+                ui.horizontal(|ui| {
+                    let a = ui.cursor().min;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(a + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.muted);
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(s.pulse_event).size(10.0).color(p.muted));
+                    ui.add_space(8.0);
+                    let b = ui.cursor().min;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(b + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.red);
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new(s.pulse_cluster).size(10.0).color(p.muted));
+                });
+                let pulse_axis = pulse_axis_labels();
+                ui::pulse_chart(ui, self.theme, &pulse, &pulse_axis);
+            });
+    }
+
+    /// Guarded-process table. Always shows its frame and header, even when empty.
+    fn draw_guard_table(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+        let filter = self.search.to_lowercase();
+        let visible: Vec<usize> = (0..self.configs.len())
+            .filter(|&i| filter.is_empty() || self.configs[i].name.to_lowercase().contains(&filter))
+            .collect();
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 10.0)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(s.nav_processes).size(14.0).strong().color(p.ink));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(
+                            s.entries_count.replace("{}", &self.configs.len().to_string())
+                        ).size(11.0).color(p.muted));
+                    });
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("entries").num_columns(5).striped(false).spacing([16.0, 6.0]).show(ui, |ui| {
+                    for h in [s.col_name, s.col_status, s.col_pid, s.col_restarts, s.col_last_exit] {
+                        ui.label(egui::RichText::new(h).size(11.0).color(p.muted));
+                    }
+                    ui.end_row();
+                    for idx in &visible {
+                        let cfg = &self.configs[*idx];
+                        let status = self.statuses.get(*idx);
+                        if ui.selectable_label(self.selected == Some(*idx), &cfg.name).clicked() { self.selected = Some(*idx); }
+                        let is_running = status.map(|x| x.running).unwrap_or(false);
+                        let (label, color) = if self.paused { (s.paused, p.amber) }
+                            else if is_running { (s.running, p.green) }
+                            else { (s.stopped, p.red) };
+                        ui.horizontal(|ui| {
+                            ui.painter().circle_filled(ui.cursor().min + egui::vec2(3.0, 8.0), 3.0, color);
+                            ui.add_space(10.0);
+                            ui.label(egui::RichText::new(label).size(12.0).color(color));
+                        });
+                        ui.label(status.and_then(|x| x.pid).map(|v| v.to_string()).unwrap_or_else(|| "-".into()));
+                        ui.label(status.map(|x| x.restarts.to_string()).unwrap_or_else(|| "0".into()));
+                        ui.label(status.and_then(|x| x.last_exit.clone()).unwrap_or_else(|| "-".into()));
+                        ui.end_row();
+                    }
+                });
+                if self.configs.is_empty() {
+                    ui.add_space(18.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new(s.empty_title).size(14.0).color(p.muted));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(s.empty_line1).size(11.0).color(p.muted));
+                        ui.label(egui::RichText::new(s.empty_line2).size(11.0).color(p.muted));
+                    });
+                }
+                ui.add_space(4.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(s.status_bar).size(10.0).color(p.muted));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new(s.view_all).size(10.0).color(p.accent)).frame(false)).clicked() {
+                            self.view = View::Processes;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Crash-history card with structured event rows and a footer.
+    fn draw_crash_card(&mut self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette) {
+        egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(6.0).inner_margin(egui::vec2(14.0, 10.0)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(s.crash_history).size(14.0).strong().color(p.ink));
+                    ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(11.0).color(p.muted));
+                });
+                ui.add_space(4.0);
+                if self.crashes.is_empty() {
+                    ui.label(egui::RichText::new(s.no_crashes).size(11.0).color(p.muted));
+                } else {
+                    for (i, c) in self.crashes.iter().rev().take(6).enumerate() {
+                        if i > 0 { ui.separator(); }
+                        Self::draw_crash_event(ui, c, s, &p);
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let shown = self.crashes.len().min(6);
+                        ui.label(egui::RichText::new(s.showing_latest.replace("{}", &shown.to_string())).size(10.0).color(p.muted));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(egui::RichText::new(s.menu_clear_history).size(10.0).color(p.accent)).frame(false)).clicked() {
+                                self.clear_history();
+                            }
+                        });
+                    });
+                }
+            });
+    }
+
     /// One crash event as the prototype's two-row card: name+time, then details.
     fn draw_crash_event(ui: &mut egui::Ui, c: &CrashEntry, s: &ui_strings::Str, p: &ui::Palette) {
         ui.horizontal(|ui| {
@@ -640,24 +833,25 @@ impl eframe::App for GuardianApp {
             }
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
-                // Shield mark drawn from the product's own symbol.
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "◈",
-                    egui::FontId::proportional(14.0), p.accent);
+                ui::icon(ui, ui::Icon::Shield, p.accent, 16.0);
+                ui.add_space(4.0);
                 ui.label(egui::RichText::new(s.brand_name).size(12.0).strong().color(p.ink));
                 ui.label(egui::RichText::new(s.brand_scope).size(11.0).color(p.muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
-                        let r = ui.add_sized([30.0, 30.0], egui::Button::new(
-                            egui::RichText::new(glyph).size(12.0).color(p.muted)).frame(false));
+                    let btn = |ui: &mut egui::Ui, icon: ui::Icon, tip: &str| {
+                        let r = ui.add_sized([30.0, 30.0], egui::Button::new("").frame(false));
+                        let hovered = r.hovered();
+                        let col = if hovered { p.ink } else { p.muted };
+                        ui::icon_at(ui.painter(), r.rect.center(), icon, col, 12.0);
                         r.on_hover_text(tip).clicked()
                     };
-                    if btn(ui, "✕", s.win_close) { self.quit(ctx); }
+                    if btn(ui, ui::Icon::Close, s.win_close) { self.quit(ctx); }
                     let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                    if btn(ui, "□", if max { s.win_restore } else { s.win_maximize }) {
+                    if btn(ui, if max { ui::Icon::Restore } else { ui::Icon::Maximize },
+                           if max { s.win_restore } else { s.win_maximize }) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
                     }
-                    if btn(ui, "─", s.win_minimize) {
+                    if btn(ui, ui::Icon::Minimize, s.win_minimize) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
                     ui.add_space(10.0);
@@ -673,11 +867,12 @@ impl eframe::App for GuardianApp {
 
         // ---- Icon rail: switch between the four views ----
         egui::SidePanel::left("rail").exact_width(48.0).resizable(false).show(ctx, |ui| {
-            let mut rail_btn = |ui: &mut egui::Ui, glyph: &str, tip: &str, view: View| {
+            let mut rail_btn = |ui: &mut egui::Ui, kind: ui::Icon, tip: &str, view: View| {
                 let active = self.view == view;
-                let btn = ui.add_sized([40.0, 38.0], egui::Button::new(
-                    egui::RichText::new(glyph).size(17.0).color(if active { p.ink } else { p.muted }))
-                    .frame(false));
+                let btn = ui.add_sized([40.0, 38.0], egui::Button::new("").frame(false));
+                let hovered = btn.hovered();
+                let col = if active { p.ink } else if hovered { p.ink } else { p.muted };
+                ui::icon_at(ui.painter(), btn.rect.center(), kind, col, 18.0);
                 if btn.clicked() { self.view = view; }
                 let r = btn.rect;
                 btn.on_hover_text(tip);
@@ -688,15 +883,16 @@ impl eframe::App for GuardianApp {
                 }
             };
             ui.add_space(6.0);
-            rail_btn(ui, "▦", s.nav_overview, View::Overview);
-            rail_btn(ui, "≣", s.nav_processes, View::Processes);
-            rail_btn(ui, "◷", s.nav_history, View::History);
+            rail_btn(ui, ui::Icon::Grid, s.nav_overview, View::Overview);
+            rail_btn(ui, ui::Icon::List, s.nav_processes, View::Processes);
+            rail_btn(ui, ui::Icon::Clock, s.nav_history, View::History);
             ui.add_space(6.0);
             ui.separator();
-            rail_btn(ui, "⚙", s.nav_settings, View::Settings);
+            rail_btn(ui, ui::Icon::Gear, s.nav_settings, View::Settings);
             ui.add_space((ui.available_height() - 44.0).max(0.0));
-            let about = ui.add_sized([40.0, 38.0], egui::Button::new(
-                egui::RichText::new("ⓘ").size(17.0).color(p.muted)).frame(false));
+            let about = ui.add_sized([40.0, 38.0], egui::Button::new("").frame(false));
+            ui::icon_at(ui.painter(), about.rect.center(), ui::Icon::Info,
+                if about.hovered() { p.ink } else { p.muted }, 18.0);
             if about.clicked() { self.about_open = true; }
             about.on_hover_text(s.menu_about);
         });
@@ -802,7 +998,7 @@ impl eframe::App for GuardianApp {
                     });
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                    if ui.button(egui::RichText::new(s.add_button).size(12.0)).clicked() {
+                    if Self::icon_button(ui, ui::Icon::Plus, s.add_button, p.ink) {
                         self.add.open = true;
                         self.add.processes_loaded = false;
                     }
@@ -848,205 +1044,52 @@ impl eframe::App for GuardianApp {
             }
             ui.add_space(10.0);
 
-            // Chart band: trend + health ring. Side by side when wide, stacked when narrow.
-            let (trend_values, trend_labels) = self.trend_data();
-            let health = self.health_ratio();
-            let h_stopped = self.offline_count();
-            let trend_card = |ui: &mut egui::Ui| {
-                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.chart_restart_trend).size(14.0).strong().color(p.ink));
-                        ui.label(egui::RichText::new(s.chart_trend_meta).size(11.0).color(p.muted));
-                        ui.add_space(4.0);
-                        // Prototype's chart legend: one accent swatch + "All entries".
-                        ui.horizontal(|ui| {
-                            let sw = ui.cursor().min;
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(sw + egui::vec2(0.0, 3.0), egui::vec2(8.0, 8.0)), 2.0, p.accent);
-                            ui.add_space(14.0);
-                            ui.label(egui::RichText::new(s.legend_all_entries).size(11.0).color(p.muted));
-                        });
-                        ui.add_space(2.0);
-                        // Descriptive peak callout, e.g. "5 restarts at 14:00".
-                        let peak_note = trend_values.iter().enumerate()
-                            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                            .filter(|(_, v)| **v > 0.0)
-                            .map(|(i, v)| {
-                                let hour = trend_labels.get(i).and_then(|l| l.split(':').next()).unwrap_or("");
-                                s.trend_peak.replace("{}", &format!("{:.0}", v)).replacen("{}", hour, 1)
-                            });
-                        ui::line_chart(ui, self.theme, &trend_values, &trend_labels, peak_note.as_deref());
-                    });
-            };
-            let health_card = |ui: &mut egui::Ui| {
-                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.chart_uptime).size(14.0).strong().color(p.ink));
-                        ui.label(egui::RichText::new(s.chart_uptime_meta).size(11.0).color(p.muted));
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui::ring_chart(ui, self.theme, health, s.ring_online_rate);
-                            ui.vertical(|ui| {
-                                let online_secs = self.statuses.iter().filter(|x| x.running)
-                                    .map(|x| x.uptime_secs).max().unwrap_or(0);
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(s.label_online).size(11.0).color(p.muted));
-                                    ui.label(egui::RichText::new(format_duration(online_secs)).size(11.0).color(p.green));
-                                });
-                                let restarting = self.statuses.iter().filter(|x| x.restarting).count();
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(s.label_restarting).size(11.0).color(p.muted));
-                                    ui.label(egui::RichText::new(format!("{}", restarting)).size(11.0).color(p.amber));
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(s.label_offline).size(11.0).color(p.muted));
-                                    ui.label(egui::RichText::new(format!("{}", h_stopped)).size(11.0).color(p.red));
-                                });
-                            });
-                        });
-                        if let Some(longest) = self.statuses.iter().filter(|x| x.running).max_by_key(|x| x.uptime_secs) {
-                            ui.add_space(6.0);
-                            ui.label(egui::RichText::new(s.longest_running.replace("{}", &format_duration(longest.uptime_secs)))
-                                .size(11.0).color(p.muted));
-                        }
-                        if h_stopped > 0 {
-                            ui.add_space(6.0);
-                            ui.label(egui::RichText::new(
-                                s.health_offline_finding.replace("{}", &h_stopped.to_string())
-                            ).size(11.0).color(p.muted));
-                        }
-                    });
-            };
-            let wide = ui.available_width() >= 720.0;
-            if wide {
-                let half = (ui.available_width() - 10.0) / 2.0;
+            // ---- Chart band: two equal columns, each filling its half ----
+            let gap = 16.0_f32;
+            let band_w = ui.available_width();
+            let col_w = (band_w - gap) / 2.0;
+            if band_w >= 720.0 {
                 ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(egui::vec2(half, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(half - 8.0);
-                        trend_card(ui);
+                    ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(col_w);
+                        self.draw_trend_card(ui, s, &p);
                     });
-                    ui.add_space(10.0);
-                    ui.allocate_ui_with_layout(egui::vec2(half, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.set_width(half - 8.0);
-                        health_card(ui);
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(egui::vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(col_w);
+                        self.draw_health_card(ui, s, &p);
                     });
                 });
             } else {
-                trend_card(ui);
-                ui.add_space(10.0);
-                health_card(ui);
+                self.draw_trend_card(ui, s, &p);
+                ui.add_space(gap);
+                self.draw_health_card(ui, s, &p);
             }
-            ui.add_space(12.0);
+            ui.add_space(16.0);
 
-            // Restart pulse: this product's signature view
-            let pulse = self.pulse_data();
-            egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-                .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
-                    ui.label(egui::RichText::new(s.chart_pulse).size(14.0).strong().color(p.ink));
-                    ui.label(egui::RichText::new(s.chart_pulse_meta).size(11.0).color(p.muted));
-                    ui.horizontal(|ui| {
-                        let a = ui.cursor().min;
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(a + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.muted);
-                        ui.add_space(14.0);
-                        ui.label(egui::RichText::new(s.pulse_event).size(10.0).color(p.muted));
-                        ui.add_space(8.0);
-                        let b = ui.cursor().min;
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(b + egui::vec2(0.0, 5.0), egui::vec2(8.0, 8.0)), 2.0, p.red);
-                        ui.add_space(14.0);
-                        ui.label(egui::RichText::new(s.pulse_cluster).size(10.0).color(p.muted));
+            // ---- Bottom band: guard table left; crash history + pulse stacked right ----
+            if band_w >= 720.0 {
+                let table_w = (band_w - gap) * 0.62;
+                let side_w = band_w - gap - table_w;
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(egui::vec2(table_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(table_w);
+                        self.draw_guard_table(ui, s, &p);
                     });
-                    let pulse_axis = pulse_axis_labels();
-                    ui::pulse_chart(ui, self.theme, &pulse, &pulse_axis);
+                    ui.add_space(gap);
+                    ui.allocate_ui_with_layout(egui::vec2(side_w, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.set_width(side_w);
+                        self.draw_pulse_card(ui, s, &p);
+                        ui.add_space(gap);
+                        self.draw_crash_card(ui, s, &p);
+                    });
                 });
-            ui.add_space(12.0);
-
-            // Guarded processes table
-            let filter = self.search.to_lowercase();
-            let visible: Vec<usize> = (0..self.configs.len()).filter(|&i| {
-                filter.is_empty() || self.configs[i].name.to_lowercase().contains(&filter)
-            }).collect();
-
-            if self.configs.is_empty() {
-                ui.add_space(30.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(s.empty_title).size(18.0).color(p.muted));
-                    ui.add_space(8.0);
-                    ui.label(s.empty_line1);
-                    ui.label(s.empty_line2);
-                });
-            } else if visible.is_empty() {
-                ui.add_space(20.0);
-                ui.vertical_centered(|ui| { ui.label(egui::RichText::new(s.no_crashes).color(p.muted)); });
             } else {
-                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 8.0)).show(ui, |ui| {
-                    egui::Grid::new("entries").num_columns(5).striped(false).spacing([16.0, 6.0]).show(ui, |ui| {
-                        for h in [s.col_name, s.col_status, s.col_pid, s.col_restarts, s.col_last_exit] {
-                            ui.label(egui::RichText::new(h).size(11.0).color(p.muted));
-                        }
-                        ui.end_row();
-                        for idx in visible {
-                            let cfg = &self.configs[idx];
-                            let status = self.statuses.get(idx);
-                            if ui.selectable_label(self.selected == Some(idx), &cfg.name).clicked() { self.selected = Some(idx); }
-                            let is_running = status.map(|x| x.running).unwrap_or(false);
-                            let (label, color) = if self.paused {
-                                (s.paused, p.amber)
-                            } else if is_running {
-                                (s.running, p.green)
-                            } else {
-                                (s.stopped, p.red)
-                            };
-                            ui.horizontal(|ui| {
-                                ui.painter().circle_filled(ui.cursor().min + egui::vec2(3.0, 8.0), 3.0, color);
-                                ui.add_space(10.0);
-                                ui.label(egui::RichText::new(label).size(12.0).color(color));
-                            });
-                            ui.label(status.and_then(|x| x.pid).map(|v| v.to_string()).unwrap_or_else(|| "-".into()));
-                            ui.label(status.map(|x| x.restarts.to_string()).unwrap_or_else(|| "0".into()));
-                            ui.label(status.and_then(|x| x.last_exit.clone()).unwrap_or_else(|| "-".into()));
-                            ui.end_row();
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(s.status_bar).size(10.0).color(p.muted));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new(s.view_all).size(10.0).color(p.accent)).frame(false)).clicked() {
-                                self.view = View::Processes;
-                            }
-                        });
-                    });
-                });
-
-                ui.add_space(10.0);
-                egui::Frame::NONE.fill(p.surface).stroke(egui::Stroke::new(1.0_f32, p.border))
-                    .corner_radius(6.0).inner_margin(egui::vec2(12.0, 10.0)).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(s.crash_history).size(14.0).strong().color(p.ink));
-                        ui.label(egui::RichText::new(format!("{} {}", self.crashes.len(), s.crash_count)).size(11.0).color(p.muted));
-                    });
-                    if self.crashes.is_empty() {
-                        ui.label(egui::RichText::new(s.no_crashes).size(12.0).color(p.muted));
-                    } else {
-                        for (i, c) in self.crashes.iter().rev().take(6).enumerate() {
-                            if i > 0 { ui.separator(); }
-                            Self::draw_crash_event(ui, c, s, &p);
-                        }
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let shown = self.crashes.len().min(6);
-                            ui.label(egui::RichText::new(s.showing_latest.replace("{}", &shown.to_string())).size(10.0).color(p.muted));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.add(egui::Button::new(egui::RichText::new(s.menu_clear_history).size(10.0).color(p.accent)).frame(false)).clicked() {
-                                    self.clear_history();
-                                }
-                            });
-                        });
-                    }
-                });
+                self.draw_guard_table(ui, s, &p);
+                ui.add_space(gap);
+                self.draw_pulse_card(ui, s, &p);
+                ui.add_space(gap);
+                self.draw_crash_card(ui, s, &p);
             }
             }); // ScrollArea
         }); // CentralPanel
