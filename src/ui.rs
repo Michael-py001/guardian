@@ -188,6 +188,13 @@ pub fn apply_visuals(ctx: &egui::Context, theme: Theme) {
     visuals.widgets.open.fg_stroke.color = p.ink;
     // Roomy buttons, matching the prototype's pill padding.
     ctx.style_mut(|style| style.spacing.button_padding = egui::vec2(12.0, 6.0));
+    // Solid scroll bars, not egui's floating default: a floating bar is painted over
+    // the content, so the dashboard's right-hand card edges and the status labels ran
+    // under it. Solid bars reserve their width instead.
+    ctx.style_mut(|style| {
+        style.spacing.scroll = egui::style::ScrollStyle::solid();
+        style.spacing.scroll.bar_inner_margin = 8.0;
+    });
     ctx.set_visuals(visuals);
 }
 

@@ -648,7 +648,7 @@ impl GuardianApp {
         ui.heading(egui::RichText::new(s.nav_processes).size(24.0).color(p.ink));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button(s.add_button).clicked() { self.add.open = true; self.add.processes_loaded = false; }
+            if Self::icon_button(ui, ui::Icon::Plus, s.add_button, p.ink) { self.add.open = true; self.add.processes_loaded = false; }
             if ui.button(s.remove_button).clicked() { self.remove_selected(); }
             let label = if self.paused { s.resume_button } else { s.pause_button };
             if ui.button(label).clicked() { self.toggle_pause(); }
@@ -1121,7 +1121,7 @@ impl eframe::App for GuardianApp {
 
             // Toolbar
             ui.horizontal(|ui| {
-                if ui.button(s.add_button).clicked() { self.add.open = true; self.add.processes_loaded = false; }
+                if Self::icon_button(ui, ui::Icon::Plus, s.add_button, p.ink) { self.add.open = true; self.add.processes_loaded = false; }
                 if ui.button(s.remove_button).clicked() { self.remove_selected(); }
                 let pause_label = if self.paused { s.resume_button } else { s.pause_button };
                 if ui.button(pause_label).clicked() { self.toggle_pause(); }
