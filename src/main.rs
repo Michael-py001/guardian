@@ -5,6 +5,7 @@ mod engine;
 mod ui;
 mod ui_strings;
 
+use chrono::{Duration, NaiveDateTime};
 use eframe::egui;
 use engine::{CrashEntry, EntryStatus, ProcessConfig, RunningProcess, StatusSink, Watcher};
 #[cfg(windows)]
@@ -22,6 +23,57 @@ use ui_strings::{Lang, Settings, Theme, strings};
 /// Explicit Quit sets `quitting`, so the request is left uncancelled and eframe exits.
 fn should_minimize_to_tray(close_requested: bool, quitting: bool) -> bool {
     close_requested && !quitting
+}
+
+/// Availability over a trailing window from real exit history. For each exit we
+/// know the run's end (exit time) and length (uptime); for a live process the run
+/// ends now. Merging the runs per entry gives online seconds, so a crash drops
+/// the ratio immediately and it recovers as the window slides past the gap.
+/// `statuses` and `configs` are parallel (watcher publishes one status per config).
+fn uptime_ratio_at(crashes: &[CrashEntry], configs: &[ProcessConfig],
+                   statuses: &[EntryStatus], now: NaiveDateTime,
+                   window: Duration) -> f32 {
+    if configs.is_empty() { return 0.0; }
+    let start = now - window;
+    let window_secs = window.num_seconds().max(1) as f64;
+
+    let mut online_total = 0.0_f64;
+    for (cfg, status) in configs.iter().zip(statuses.iter()) {
+        let mut runs: Vec<(NaiveDateTime, NaiveDateTime)> = crashes.iter()
+            .filter(|c| c.process == cfg.name)
+            .filter_map(|c| {
+                let end = NaiveDateTime::parse_from_str(&c.time, "%Y-%m-%d %H:%M:%S").ok()?;
+                let begin = end - chrono::Duration::seconds(c.uptime_secs.min(i64::MAX as u64) as i64);
+                Some((begin, end))
+            })
+            .collect();
+        // An adopted process is treated as healthy since Guardian started watching,
+        // not since the OS launched it (we have no earlier timestamp).
+        if status.running && status.uptime_secs > 0 {
+            runs.push((now - chrono::Duration::seconds(status.uptime_secs as i64), now));
+        }
+        let mut online = 0_i64;
+        merge_clip_runs(&mut runs, start, now, |a, b| online += (b - a).num_seconds());
+        online_total += online as f64;
+    }
+    (online_total / (configs.len() as f64 * window_secs)).clamp(0.0, 1.0) as f32
+}
+
+/// Fold overlapping [start, end] intervals into a union clipped to [lo, hi].
+fn merge_clip_runs(runs: &mut Vec<(NaiveDateTime, NaiveDateTime)>, lo: NaiveDateTime,
+                   hi: NaiveDateTime, mut emit: impl FnMut(NaiveDateTime, NaiveDateTime)) {
+    runs.sort_by_key(|r| r.0);
+    let mut merged: Option<(NaiveDateTime, NaiveDateTime)> = None;
+    for (a, b) in runs.drain(..) {
+        let (a, b) = (a.max(lo), b.min(hi));
+        if a >= b { continue; }
+        match merged {
+            Some((ma, mb)) if a <= mb => merged = Some((ma, mb.max(b))),
+            Some(cur) => { emit(cur.0, cur.1); merged = Some((a, b)); }
+            None => merged = Some((a, b)),
+        }
+    }
+    if let Some(cur) = merged { emit(cur.0, cur.1); }
 }
 
 /// Main window handle, stored as `isize` for the tray thread's `SetForegroundWindow`
@@ -320,7 +372,7 @@ impl GuardianApp {
 
     /// Render the uptime-health card, filling the width it is given.
     fn draw_health_card(&self, ui: &mut egui::Ui, s: &ui_strings::Str, p: &ui::Palette, height: f32) {
-        let health = self.health_ratio();
+        let health = self.uptime_ratio_24h();
         let h_stopped = self.offline_count();
         Self::card_surface(ui, height, p, |ui| {
                 ui.label(egui::RichText::new(s.chart_uptime).size(14.0).strong().color(p.ink));
@@ -332,6 +384,9 @@ impl GuardianApp {
                     // crowded the ring even at this card's width.
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
+                        // The ring is 24-hour availability; these three figures are a
+                        // live snapshot, so label them as such to avoid mixing scopes.
+                        ui.label(egui::RichText::new(s.legend_current_state).size(10.0).color(p.muted));
                         // One row per figure, spaced so the three read as a list rather
                         // than a stack of lines; egui packs labels tight by default.
                         let gap = 5.0;
@@ -804,11 +859,11 @@ impl GuardianApp {
         lanes
     }
 
-    /// Share of guarded entries that are running right now. No estimate.
-    fn health_ratio(&self) -> f32 {
-        if self.statuses.is_empty() { return 0.0; }
-        let running = self.statuses.iter().filter(|x| x.running).count();
-        running as f32 / self.statuses.len() as f32
+    /// Real 24-hour availability from exit history, not a live status snapshot.
+    fn uptime_ratio_24h(&self) -> f32 {
+        use chrono::Local;
+        uptime_ratio_at(&self.crashes, &self.configs, &self.statuses,
+                        Local::now().naive_local(), Duration::hours(24))
     }
 
     /// The process with the most restarts today, for the subtitle finding.
@@ -894,7 +949,11 @@ impl eframe::App for GuardianApp {
             self.last_crash_refresh = std::time::Instant::now();
         }
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if should_minimize_to_tray(close_requested, self.quitting) {
+        // The tray Quit handler runs on a background thread and cannot touch
+        // `self.quitting`, so it sets the global SHUTDOWN instead. Honour it here
+        // or the resulting Close request would be cancelled back into the tray.
+        let quitting = self.quitting || engine::SHUTDOWN.load(Ordering::SeqCst);
+        if should_minimize_to_tray(close_requested, quitting) {
             set_window_visible(false);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
@@ -1368,8 +1427,14 @@ fn install_tray_handler() {
                 TRAY_AUTOSTART_CHANGED.store(true, Ordering::SeqCst);
             }
             TRAY_QUIT => {
+                // Request a graceful eframe close instead of process::exit: the
+                // latter skips destructors, so TrayIcon::drop never sends
+                // NIM_DELETE and Explorer leaves a ghost icon until a hover.
+                // The close request is not cancelled because `quitting` is set.
                 engine::SHUTDOWN.store(true, Ordering::SeqCst);
-                std::process::exit(0);
+                if let Some(ctx) = MAIN_CTX.lock().ok().and_then(|c| c.clone()) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
             _ => {}
         }
@@ -1511,40 +1576,6 @@ fn same_process_name(pid: u32) -> bool {
     }
 }
 
-/// Place the window in the middle of the primary monitor's work area.
-///
-/// With more than one monitor Windows picks a position itself, and that lands the
-/// window on whichever screen it likes (observed on a secondary one). The work area
-/// is used rather than the full monitor rect so the window never starts under the
-/// taskbar.
-#[cfg(windows)]
-fn center_on_primary_screen(hwnd: isize) {
-    use windows_sys::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SetWindowPos, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE,
-    };
-    use windows_sys::Win32::Foundation::POINT;
-
-    let origin = POINT { x: 0, y: 0 };
-    unsafe {
-        let monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
-        if monitor == 0 { return; }
-        let mut info: MONITORINFO = std::mem::zeroed();
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if GetMonitorInfoW(monitor, &mut info) == 0 { return; }
-
-        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-        if GetWindowRect(hwnd, &mut rect) == 0 { return; }
-        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-        let work = info.rcWork;
-        let x = work.left + ((work.right - work.left) - w) / 2;
-        let y = work.top + ((work.bottom - work.top) - h) / 2;
-        SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-}
-
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     if !claim_single_instance() { return Ok(()); }
@@ -1569,7 +1600,6 @@ fn main() -> eframe::Result<()> {
         if let Ok(handle) = cc.window_handle() {
             if let raw_window_handle::RawWindowHandle::Win32(w) = handle.as_raw() {
                 MAIN_HWND.store(w.hwnd.get(), Ordering::SeqCst);
-                center_on_primary_screen(w.hwnd.get() as isize);
             }
         }
         if let Ok(mut ctx) = MAIN_CTX.lock() { *ctx = Some(cc.egui_ctx.clone()); }
@@ -1597,6 +1627,50 @@ mod close_tests {
     fn fill2_replaces_placeholders_in_order() {
         assert_eq!(fill2("{} of {} entries", "3", "5"), "3 of 5 entries");
         assert_eq!(fill2("{} restarted {} times", "Demo", "5"), "Demo restarted 5 times");
+    }
+
+    #[test]
+    fn uptime_ratio_drops_on_crash_and_recovers() {
+        use super::{CrashEntry, EntryStatus, ProcessConfig, merge_clip_runs, uptime_ratio_at};
+        use chrono::{Duration, NaiveDate, NaiveDateTime};
+
+        let now = NaiveDate::from_ymd_opt(2026, 11, 25).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let window = Duration::hours(24);
+        let cfg = ProcessConfig::new("App".into(), "app.exe".into());
+        let status = |running, uptime| EntryStatus {
+            running, pid: None, restarts: 0, last_exit: None, uptime_secs: uptime, restarting: false,
+        };
+        let crash = |time: NaiveDateTime, uptime| CrashEntry {
+            time: time.format("%Y-%m-%d %H:%M:%S").to_string(),
+            process: "App".into(), pid: 1, exit_code: "1".into(),
+            uptime_secs: uptime, restart_number: 1,
+        };
+
+        // Continuously up for the whole window -> 100%.
+        let full = uptime_ratio_at(&[], &[cfg.clone()], &[status(true, 86_400)], now, window);
+        assert!((full - 1.0).abs() < 0.001, "full window: {}", full);
+
+        // Ran 22h, crashed 2h ago, offline 1h, back up 1h ago: 23/24 online.
+        // This is the user's case: the crash is already healed, yet the ratio
+        // must still show the one-hour hole.
+        let one_crash = uptime_ratio_at(
+            &[crash(now - Duration::hours(2), 22 * 3600)], &[cfg.clone()],
+            &[status(true, 3600)], now, window);
+        assert!((one_crash - 23.0 / 24.0).abs() < 0.001, "one crash: {}", one_crash);
+
+        // 23h later the gap has slid out of the window: back to 100%.
+        let later = now + Duration::hours(23);
+        let recovered = uptime_ratio_at(
+            &[crash(now - Duration::hours(2), 22 * 3600)], &[cfg.clone()],
+            &[status(true, 24 * 3600)], later, window);
+        assert!((recovered - 1.0).abs() < 0.001, "recovered: {}", recovered);
+
+        // Overlapping runs are merged, not double counted.
+        let mut runs = vec![(now - Duration::hours(3), now - Duration::hours(1)),
+                            (now - Duration::hours(2), now)];
+        let mut union = 0_i64;
+        merge_clip_runs(&mut runs, now - window, now, |a, b| union += (b - a).num_seconds());
+        assert_eq!(union, 3 * 3600, "overlapping runs must merge");
     }
 
     #[test]

@@ -243,9 +243,9 @@ pub struct RunningProcess {
     pub path: Option<String>,
 }
 
-/// List running processes (name + pid), sorted by name. Used by the GUI add dialog.
-pub fn list_running_processes() -> Vec<RunningProcess> {
-    #[cfg(windows)]
+/// Every running process instance, including duplicate image names.
+#[cfg(windows)]
+fn list_running_processes_raw() -> Vec<RunningProcess> {
     unsafe {
         let snap = win::CreateToolhelp32Snapshot(win::TH32CS_SNAPPROCESS, 0);
         if snap == win::INVALID_HANDLE_VALUE {
@@ -271,6 +271,15 @@ pub fn list_running_processes() -> Vec<RunningProcess> {
             ok = win::Process32NextW(snap, &mut entry);
         }
         win::CloseHandle(snap);
+        out
+    }
+}
+
+/// List running processes (name + pid), sorted by name. Used by the GUI add dialog.
+pub fn list_running_processes() -> Vec<RunningProcess> {
+    #[cfg(windows)]
+    {
+        let mut out = list_running_processes_raw();
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         out.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
         out
@@ -300,11 +309,19 @@ fn process_image_path(pid: u32) -> Option<String> {
 #[cfg(not(windows))]
 fn process_image_path(_pid: u32) -> Option<String> { None }
 
-fn find_process_by_name(name: &str) -> Option<u32> {
-    list_running_processes()
-        .into_iter()
-        .find(|p| p.name.eq_ignore_ascii_case(name))
-        .map(|p| p.pid)
+/// All PIDs whose image name matches. `list_running_processes` dedupes by name
+/// for the picker UI, so we enumerate raw entries here to see every instance.
+fn find_process_by_name(name: &str) -> Vec<u32> {
+    #[cfg(windows)]
+    {
+        list_running_processes_raw()
+            .into_iter()
+            .filter(|p| p.name.eq_ignore_ascii_case(name))
+            .map(|p| p.pid)
+            .collect()
+    }
+    #[cfg(not(windows))]
+    Vec::new()
 }
 
 #[cfg(windows)]
@@ -387,7 +404,6 @@ struct Runtime {
     delay_ms: u64,
     restarts: i64,
     stopped: bool,
-    adopt_attempted: bool,
     last_exit: Option<String>,
 }
 
@@ -402,7 +418,6 @@ impl Runtime {
             delay_ms,
             restarts: 0,
             stopped: false,
-            adopt_attempted: false,
             last_exit: None,
         }
     }
@@ -423,31 +438,33 @@ fn try_adopt(rt: &mut Runtime) -> bool {
     let Some(name) = rt.cfg.adopt.clone() else {
         return false;
     };
-    match find_process_by_name(&name) {
-        Some(pid) => match open_process(pid) {
-            Some(handle) => {
-                log(&format!("[{}] adopted running {} (pid {})", rt.cfg.name, name, pid));
-                rt.child = Some(Watched::Adopted { handle, pid });
-                rt.started_at = Some(
-                    Instant::now()
-                        .checked_sub(Duration::from_secs(rt.cfg.healthy_uptime_secs))
-                        .unwrap_or_else(Instant::now),
-                );
-                rt.pending_start_at = None;
-                true
-            }
-            None => false,
-        },
-        None => false,
+    for pid in find_process_by_name(&name) {
+        let Some(handle) = open_process(pid) else { continue };
+        // A zombie still appears in the process list and OpenProcess can succeed,
+        // but its handle signals immediately. Skip it and try the next instance.
+        if unsafe { win::WaitForSingleObject(handle, 0) } == win::WAIT_OBJECT_0 {
+            unsafe { win::CloseHandle(handle) };
+            continue;
+        }
+        log(&format!("[{}] adopted running {} (pid {})", rt.cfg.name, name, pid));
+        rt.child = Some(Watched::Adopted { handle, pid });
+        rt.started_at = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(rt.cfg.healthy_uptime_secs))
+                .unwrap_or_else(Instant::now),
+        );
+        rt.pending_start_at = None;
+        return true;
     }
+    false
 }
 
 fn spawn(rt: &mut Runtime) {
-    if !rt.adopt_attempted {
-        rt.adopt_attempted = true;
-        if try_adopt(rt) {
-            return;
-        }
+    // A single-instance app may appear only after Guardian starts, or may be
+    // reopened by the user after a crash. Re-check on every spawn instead of
+    // giving up after the first attempt.
+    if try_adopt(rt) {
+        return;
     }
 
     let mut cmd = Command::new(&rt.cfg.command);
@@ -624,7 +641,8 @@ impl Watcher {
             self.publish_statuses();
             std::thread::sleep(poll);
         }
-        self.terminate_all();
+        // Leaving the guarded processes running is deliberate: Guardian exiting
+        // (including a crash) must not take down the apps it was watching.
         self.publish_statuses();
     }
 
@@ -654,16 +672,6 @@ impl Watcher {
             if !exists {
                 log(&format!("[{}] added to guarding", c.name));
                 self.runtimes.push(Runtime::new(c.clone()));
-            }
-        }
-    }
-
-    fn terminate_all(&mut self) {
-        for rt in self.runtimes.iter_mut() {
-            if let Some(mut watched) = rt.child.take() {
-                let pid = watched.pid();
-                watched.terminate();
-                log(&format!("[{}] terminated (pid {})", rt.cfg.name, pid));
             }
         }
     }

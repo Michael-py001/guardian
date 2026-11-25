@@ -87,8 +87,9 @@ folder), not `C:\Program Files`, so Guardian can save these files.
 - A process adopted from the running-process list is treated as healthy on its
   first observed exit (its true age is unknown).
 - Clicking the window's X hides it to the tray; Guardian keeps running. Use the
-  tray's **Show window** to bring it back, or **Exit** to stop and terminate all
-  guarded processes.
+  tray's **Show window** to bring it back, or **Exit** to stop guarding. Exiting
+  Guardian leaves every guarded process running; it never terminates the apps it
+  was watching, whether started or adopted.
 
 ## Limitations
 
@@ -163,7 +164,7 @@ Guardian 是便携应用：配置、日志、崩溃历史都放在 **exe 同目�
 - 每 250 ms 检查一次守护进程。意外退出时按递增退避重启（1s → 2s → 4s … 封顶 30s）。
 - 若进程存活至少 60 秒，视为健康并重置退避——正常关闭长跑程序不算崩溃循环。
 - 从运行进程列表接管的程序，首次退出按健康处理（真实存活时长未知）。
-- 点窗口 X 只是缩到托盘，守护继续。用托盘 **Show window** 恢复，**Exit** 才会停止并终止所有守护进程。
+- 点窗口 X 只是缩到托盘，守护继续。用托盘 **Show window** 恢复，**Exit** 只是停止守护；退出 Guardian 不会结束任何被守护的进程，无论它是 Guardian 启动的还是接管的。
 
 ### 局限
 
