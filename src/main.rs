@@ -328,15 +328,23 @@ impl GuardianApp {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui::ring_chart(ui, self.theme, health, s.ring_online_rate);
-                    ui.add_space(6.0);
+                    // Clear gap between the ring and the legend: at 6 pt the labels
+                    // crowded the ring even at this card's width.
+                    ui.add_space(14.0);
                     ui.vertical(|ui| {
+                        // One row per figure, spaced so the three read as a list rather
+                        // than a stack of lines; egui packs labels tight by default.
+                        let gap = 5.0;
                         let online_secs = self.statuses.iter().filter(|x| x.running)
                             .map(|x| x.uptime_secs).max().unwrap_or(0);
+                        ui.add_space(gap);
                         ui.label(egui::RichText::new(format!("{}  {}", s.label_online,
                             format_duration(online_secs))).size(11.0).color(p.green));
+                        ui.add_space(gap);
                         let restarting = self.statuses.iter().filter(|x| x.restarting).count();
                         ui.label(egui::RichText::new(format!("{}  {}", s.label_restarting,
                             restarting)).size(11.0).color(p.amber));
+                        ui.add_space(gap);
                         ui.label(egui::RichText::new(format!("{}  {}", s.label_offline,
                             h_stopped)).size(11.0).color(p.red));
                     });
