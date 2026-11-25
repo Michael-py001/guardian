@@ -24,10 +24,17 @@ fn should_minimize_to_tray(close_requested: bool, quitting: bool) -> bool {
     close_requested && !quitting
 }
 
-/// Main window handle, stored as `isize` so the tray callback thread (which must
-/// be `Send`) can show/focus the window without going through egui's `update()` —
-/// that loop stalls completely once the window is hidden in the tray.
+/// Main window handle, stored as `isize` for the tray thread's `SetForegroundWindow`
+/// call. Showing and hiding always go through `ViewportCommand` (see
+/// `set_window_visible`) so winit's own `VISIBLE` flag never disagrees with the HWND.
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// egui context, so the tray thread can drive the window through viewport commands
+/// from outside `update()`.
+static MAIN_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
+
+/// Hidden-to-tray state, read by `update()` to decide whether to keep rendering.
+static WINDOW_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 /// Set by the tray autostart click; `update()` refreshes the menu label on its
 /// next frame (when the window is shown again after being hidden).
@@ -880,7 +887,7 @@ impl eframe::App for GuardianApp {
         }
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if should_minimize_to_tray(close_requested, self.quitting) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            set_window_visible(false);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
@@ -908,17 +915,28 @@ impl eframe::App for GuardianApp {
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(s.brand_scope).size(11.0).color(p.muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Each control is a rectangle covering the full titlebar height, edge
+                    // to edge with its neighbours, so anywhere inside it triggers the
+                    // action — not just the 12 pt glyph. The icon is painted on top and
+                    // a hover tint shows the live area.
+                    let spacing = ui.spacing().item_spacing.x;
+                    ui.spacing_mut().item_spacing.x = 0.0;
                     let btn = |ui: &mut egui::Ui, icon: ui::Icon, tip: &str| {
-                        let r = ui.add_sized([30.0, 30.0], egui::Button::new("").frame(false));
-                        let hovered = r.hovered();
+                        let size = egui::vec2(46.0, ui.available_height());
+                        let (rect, response) =
+                            ui.allocate_exact_size(size, egui::Sense::click());
+                        let hovered = response.hovered();
+                        if hovered {
+                            ui.painter().rect_filled(rect, 0.0, p.selection_bg);
+                        }
                         let col = if hovered { p.ink } else { p.muted };
-                        ui::icon_at(ui.painter(), r.rect.center(), icon, col, 12.0);
-                        r.on_hover_text(tip).clicked()
+                        ui::icon_at(ui.painter(), rect.center(), icon, col, 12.0);
+                        response.on_hover_text(tip).clicked()
                     };
                     // The titlebar X hides to tray; File/Quit and the tray menu's
                     // Quit are the only paths that actually exit the process.
                     if btn(ui, ui::Icon::Close, s.win_close) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                        set_window_visible(false);
                     }
                     let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                     if btn(ui, if max { ui::Icon::Restore } else { ui::Icon::Maximize },
@@ -928,6 +946,7 @@ impl eframe::App for GuardianApp {
                     if btn(ui, ui::Icon::Minimize, s.win_minimize) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.add_space(10.0);
                     let dot = if self.paused { p.amber } else { p.green };
                     ui.horizontal(|ui| {
@@ -999,7 +1018,7 @@ impl eframe::App for GuardianApp {
                     if ui.button(s.menu_open_log).clicked() { self.open_log(); ui.close_menu(); }
                     ui.separator();
                     if ui.button(s.menu_minimize_tray).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
+                        set_window_visible(false); ui.close_menu();
                     }
                     if menu_item(ui, s.menu_quit, "Alt+F4") { self.quit(ctx); }
                 });
@@ -1026,7 +1045,7 @@ impl eframe::App for GuardianApp {
                     });
                     ui.separator();
                     if ui.button(s.menu_minimize_tray).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false)); ui.close_menu();
+                        set_window_visible(false); ui.close_menu();
                     }
                 });
                 ui.menu_button(s.menu_help, |ui| {
@@ -1271,6 +1290,9 @@ impl eframe::App for GuardianApp {
             self.about_open = open && !close_clicked;
         }
 
+        // Keep asking for frames even while hidden: this is the only thing that wakes
+        // the event loop to run a viewport command sent from the tray thread. The idle
+        // spin that costs CPU is eframe's own, not this call.
         ctx.request_repaint_after(std::time::Duration::from_millis(300));
     }
 
@@ -1346,22 +1368,178 @@ fn install_tray_handler() {
     }));
 }
 
-#[cfg(windows)]
-fn show_main_window() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_SHOW};
-    let hwnd = MAIN_HWND.load(Ordering::SeqCst);
-    if hwnd != 0 {
+/// Show or hide the window through egui's own viewport command, whether it comes
+/// from `update()` or from the tray thread.
+///
+/// Both paths must use this one: `ViewportCommand::Visible` is what keeps winit's
+/// `VISIBLE` flag in step with the real window. A raw `ShowWindow(SW_SHOW)` from the
+/// tray left that flag false, so every later flag diff ran with `new` lacking
+/// `VISIBLE` and finished by hiding the window — the X button looked dead after a
+/// tray restore, and maximizing or minimizing made the window vanish.
+fn set_window_visible(visible: bool) {
+    WINDOW_HIDDEN.store(!visible, Ordering::SeqCst);
+    if let Some(ctx) = MAIN_CTX.lock().ok().and_then(|c| c.clone()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(visible));
+    }
+    if visible {
+        #[cfg(windows)]
         unsafe {
-            ShowWindow(hwnd, SW_SHOW);
-            SetForegroundWindow(hwnd);
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
+            let hwnd = MAIN_HWND.load(Ordering::SeqCst);
+            if hwnd != 0 { ShowWindow(hwnd, SW_SHOW); }
         }
     }
 }
 
+/// Bring the window back and focus it. Called from the tray thread.
+#[cfg(windows)]
+fn show_main_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+    set_window_visible(true);
+    let hwnd = MAIN_HWND.load(Ordering::SeqCst);
+    if hwnd != 0 {
+        unsafe { SetForegroundWindow(hwnd) };
+    }
+}
+
 #[cfg(not(windows))]
-fn show_main_window() {}
+fn show_main_window() { set_window_visible(true); }
+
+/// Keeps this process the only Guardian instance. Windows destroys the mutex when
+/// the process exits, so a stale handle can never block a later launch.
+#[cfg(windows)]
+static INSTANCE_MUTEX: AtomicIsize = AtomicIsize::new(0);
+
+/// Take the single-instance lock. Returns false when another Guardian already holds
+/// it, in which case that instance is asked to show its window instead of a second
+/// copy opening.
+#[cfg(windows)]
+fn claim_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    // Stable per-user name: the local session namespace keeps it out of other logins.
+    let mut name: Vec<u16> = "Local\\GuardianSingleInstance\0".encode_utf16().collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_mut_ptr()) };
+    if handle == 0 { return true; } // cannot create it: fail open, never block startup
+    let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    INSTANCE_MUTEX.store(handle, Ordering::SeqCst);
+    if already {
+        // Hand off to the running copy: it may be sitting in the tray.
+        wake_existing_instance();
+        return false;
+    }
+    true
+}
+
+#[cfg(not(windows))]
+fn claim_single_instance() -> bool { true }
+
+/// Ask the already-running Guardian to come to the front. The tray often leaves it
+/// hidden, so this looks for the other instance's window even when it is not visible
+/// and restores it. Matching by process name avoids depending on the window title,
+/// which changes with the language setting.
+#[cfg(windows)]
+fn wake_existing_instance() {
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    struct Search {
+        me: u32,
+        found: isize,
+    }
+
+    unsafe extern "system" fn visit(hwnd: isize, data: isize) -> i32 {
+        let search = unsafe { &mut *(data as *mut Search) };
+        let mut pid: u32 = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid != 0 && pid != search.me && same_process_name(pid) {
+            search.found = hwnd;
+            return 0; // the first match is the other Guardian; stop enumerating
+        }
+        1
+    }
+
+    let mut search = Search { me: unsafe { GetCurrentProcessId() }, found: 0 };
+    unsafe {
+        EnumWindows(Some(visit), &mut search as *mut Search as isize);
+        if search.found != 0 {
+            ShowWindow(search.found, SW_RESTORE);
+            SetForegroundWindow(search.found);
+        }
+    }
+}
+
+/// Whether `pid` runs an executable with this process's own file name, so helper
+/// windows of unrelated applications are never mistaken for Guardian.
+#[cfg(windows)]
+fn same_process_name(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    let me = match std::env::current_exe() {
+        Ok(p) => p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default(),
+        Err(_) => return false,
+    };
+    if me.is_empty() { return false; }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 { return false; }
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok =
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if ok == 0 { return false; }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase() == me)
+            .unwrap_or(false)
+    }
+}
+
+/// Place the window in the middle of the primary monitor's work area.
+///
+/// With more than one monitor Windows picks a position itself, and that lands the
+/// window on whichever screen it likes (observed on a secondary one). The work area
+/// is used rather than the full monitor rect so the window never starts under the
+/// taskbar.
+#[cfg(windows)]
+fn center_on_primary_screen(hwnd: isize) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SetWindowPos, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE,
+    };
+    use windows_sys::Win32::Foundation::POINT;
+
+    let origin = POINT { x: 0, y: 0 };
+    unsafe {
+        let monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+        if monitor == 0 { return; }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 { return; }
+
+        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut rect) == 0 { return; }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        let work = info.rcWork;
+        let x = work.left + ((work.right - work.left) - w) / 2;
+        let y = work.top + ((work.bottom - work.top) - h) / 2;
+        SetWindowPos(hwnd, 0, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
 
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    if !claim_single_instance() { return Ok(()); }
     let st = load_settings();
     let title = strings(st.lang).app_title;
     let options = eframe::NativeOptions {
@@ -1383,8 +1561,10 @@ fn main() -> eframe::Result<()> {
         if let Ok(handle) = cc.window_handle() {
             if let raw_window_handle::RawWindowHandle::Win32(w) = handle.as_raw() {
                 MAIN_HWND.store(w.hwnd.get(), Ordering::SeqCst);
+                center_on_primary_screen(w.hwnd.get() as isize);
             }
         }
+        if let Ok(mut ctx) = MAIN_CTX.lock() { *ctx = Some(cc.egui_ctx.clone()); }
         install_tray_handler();
         let tray = build_tray(st.lang);
         let mut app = GuardianApp::new(tray);
