@@ -12,7 +12,9 @@ use engine::{CrashEntry, EntryStatus, ProcessConfig, RunningProcess, StatusSink,
 use raw_window_handle::HasWindowHandle;
 use rfd::FileDialog;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicIsize;
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
@@ -79,6 +81,7 @@ fn merge_clip_runs(runs: &mut Vec<(NaiveDateTime, NaiveDateTime)>, lo: NaiveDate
 /// Main window handle, stored as `isize` for the tray thread's `SetForegroundWindow`
 /// call. Showing and hiding always go through `ViewportCommand` (see
 /// `set_window_visible`) so winit's own `VISIBLE` flag never disagrees with the HWND.
+#[cfg(windows)]
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 
 /// egui context, so the tray thread can drive the window through viewport commands
@@ -149,10 +152,20 @@ fn save_settings(s: &Settings) {
 /// so Latin uses the sharp built-in Ubuntu face and CJK uses Microsoft YaHei UI.
 fn install_cjk_font(ctx: &egui::Context) {
     let candidates = [
+        #[cfg(windows)]
         r"C:\Windows\Fonts\msyh.ttc",       // Microsoft YaHei UI — clear, modern
+        #[cfg(windows)]
         r"C:\Windows\Fonts\Deng.ttf",
+        #[cfg(windows)]
         r"C:\Windows\Fonts\simhei.ttf",
+        #[cfg(windows)]
         r"C:\Windows\Fonts\simsun.ttc",
+        #[cfg(target_os = "macos")]
+        "/System/Library/Fonts/PingFang.ttc",
+        #[cfg(target_os = "macos")]
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        #[cfg(target_os = "macos")]
+        "/Library/Fonts/Arial Unicode.ttf",
     ];
     let found = candidates.iter().find_map(|p| std::fs::read(p).ok().map(|b| (p, b)));
     let mut fonts = egui::FontDefinitions::default();
@@ -653,6 +666,7 @@ impl GuardianApp {
         self.set_toast(strings(self.lang).toast_restarted.to_string());
     }
 
+    #[cfg(windows)]
     fn toggle_autostart(&mut self) {
         let result = if self.autostart { engine::uninstall_task() } else {
             engine::install_task(&std::env::current_exe().unwrap_or_default(), &config_path())
@@ -665,6 +679,12 @@ impl GuardianApp {
             }
             Err(e) => self.set_toast(st.toast_auto_fail.replace("{}", &e.to_string())),
         }
+    }
+
+    /// Autostart is backed by a Windows scheduled task; macOS has no equivalent here.
+    #[cfg(not(windows))]
+    fn toggle_autostart(&mut self) {
+        self.set_toast(strings(self.lang).toast_auto_unsupported.to_string());
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
@@ -1504,9 +1524,6 @@ fn claim_single_instance() -> bool {
     }
     true
 }
-
-#[cfg(not(windows))]
-fn claim_single_instance() -> bool { true }
 
 /// Ask the already-running Guardian to come to the front. The tray often leaves it
 /// hidden, so this looks for the other instance's window even when it is not visible

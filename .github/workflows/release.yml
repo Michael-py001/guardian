@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,3 +34,32 @@ jobs:
         with:
           files: guardian-${{ github.ref_name }}-windows-x86_64.zip
           generate_release_notes: true
+
+  release-mac:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13        # Intel
+            target: x86_64-apple-darwin
+          - runner: macos-14        # Apple Silicon
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Test
+        run: cargo test --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/guardian dist/
+          cp README.md LICENSE config.example.toml dist/
+          zip -j "guardian-${GITHUB_REF_NAME}-macos-${{ matrix.target }}.zip" dist/*
+      - name: Upload Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: guardian-${{ github.ref_name }}-macos-${{ matrix.target }}.zip

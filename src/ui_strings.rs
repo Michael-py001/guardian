@@ -45,6 +45,8 @@ impl Default for Settings {
 }
 
 /// All UI text in one place so adding a language is mechanical.
+/// A few fields are only used on one platform (e.g. Windows-only autostart).
+#[allow(dead_code)]
 pub struct Str {
     pub app_title: &'static str,
     pub guarding: &'static str,
@@ -178,6 +180,7 @@ pub struct Str {
     pub toast_save_fail: &'static str,
     pub toast_add_fail: &'static str,
     pub toast_auto_fail: &'static str,
+    pub toast_auto_unsupported: &'static str,
     pub toast_paused: &'static str,
     pub toast_resumed: &'static str,
     pub toast_restarted: &'static str,
@@ -320,6 +323,7 @@ static ZH: Str = Str {
     toast_save_fail: "保存失败：{}",
     toast_add_fail: "添加失败：{}",
     toast_auto_fail: "自启设置失败：{}",
+    toast_auto_unsupported: "开机自启仅支持 Windows",
     toast_paused: "守护已暂停",
     toast_resumed: "守护已恢复",
     toast_restarted: "已重启全部守护进程",
@@ -455,6 +459,7 @@ static EN: Str = Str {
     toast_save_fail: "Save failed: {}",
     toast_add_fail: "Add failed: {}",
     toast_auto_fail: "Autostart failed: {}",
+    toast_auto_unsupported: "Autostart is Windows-only",
     toast_paused: "Guarding paused",
     toast_resumed: "Guarding resumed",
     toast_restarted: "All guarded processes restarted",

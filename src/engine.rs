@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 pub const TASK_NAME: &str = "Guardian";
 pub const POLL_INTERVAL_MS: u64 = 250;
 
@@ -306,22 +307,15 @@ fn process_image_path(pid: u32) -> Option<String> {
     }
 }
 
-#[cfg(not(windows))]
-fn process_image_path(_pid: u32) -> Option<String> { None }
-
 /// All PIDs whose image name matches. `list_running_processes` dedupes by name
 /// for the picker UI, so we enumerate raw entries here to see every instance.
+#[cfg(windows)]
 fn find_process_by_name(name: &str) -> Vec<u32> {
-    #[cfg(windows)]
-    {
-        list_running_processes_raw()
-            .into_iter()
-            .filter(|p| p.name.eq_ignore_ascii_case(name))
-            .map(|p| p.pid)
-            .collect()
-    }
-    #[cfg(not(windows))]
-    Vec::new()
+    list_running_processes_raw()
+        .into_iter()
+        .filter(|p| p.name.eq_ignore_ascii_case(name))
+        .map(|p| p.pid)
+        .collect()
 }
 
 #[cfg(windows)]
@@ -330,13 +324,11 @@ fn open_process(pid: u32) -> Option<isize> {
     (handle != 0).then_some(handle)
 }
 
-#[cfg(not(windows))]
-fn open_process(_pid: u32) -> Option<isize> { None }
-
 // ---------------- Runtime watcher ----------------
 
 enum Watched {
     Owned(Child),
+    #[cfg(windows)]
     Adopted { handle: isize, pid: u32 },
 }
 
@@ -344,6 +336,7 @@ impl Watched {
     fn pid(&self) -> u32 {
         match self {
             Watched::Owned(child) => child.id(),
+            #[cfg(windows)]
             Watched::Adopted { pid, .. } => *pid,
         }
     }
@@ -356,6 +349,7 @@ impl Watched {
                 Ok(None) => None,
                 Err(_) => Some(None),
             },
+            #[cfg(windows)]
             Watched::Adopted { handle, .. } => {
                 let r = unsafe { win::WaitForSingleObject(*handle, 0) };
                 if r == win::WAIT_OBJECT_0 {
@@ -374,6 +368,7 @@ impl Watched {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+            #[cfg(windows)]
             Watched::Adopted { handle, .. } => unsafe {
                 let _ = win::TerminateProcess(*handle, 1);
                 let _ = win::WaitForSingleObject(*handle, 3_000);
@@ -434,6 +429,7 @@ impl Runtime {
     }
 }
 
+#[cfg(windows)]
 fn try_adopt(rt: &mut Runtime) -> bool {
     let Some(name) = rt.cfg.adopt.clone() else {
         return false;
@@ -458,6 +454,10 @@ fn try_adopt(rt: &mut Runtime) -> bool {
     }
     false
 }
+
+/// Adoption is Windows-only; on macOS Guardian only guards processes it starts.
+#[cfg(not(windows))]
+fn try_adopt(_rt: &mut Runtime) -> bool { false }
 
 fn spawn(rt: &mut Runtime) {
     // A single-instance app may appear only after Guardian starts, or may be

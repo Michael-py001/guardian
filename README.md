@@ -19,8 +19,8 @@ window, tray icon, no runtime to install.
   with live stat cards (guarding / total / restarts / crashes), a 12-hour restart
   trend with peak annotation, an uptime-health ring, and a **restart-pulse**
   swimlane showing each process's crashes over the last hour.
-- **Two ways to add**: browse for an `.exe`, or pick from the list of currently
-  running processes (adopt an app that is already open).
+- **Two ways to add**: browse for an executable, or pick from the list of currently
+  running processes (adopt an app that is already open — Windows only).
 - Live status table with search, plus **pause / resume** and restart-all.
 - **中文 / English toggle** and **light / dark theme**, both remembered across
   restarts.
@@ -32,14 +32,21 @@ window, tray icon, no runtime to install.
 - Exponential backoff: 1s → 2s → 4s … capped at 30s, reset after a healthy run.
 - Config hot reload: hand-edit `guardian.toml` and Guardian picks up changes
   within a second, no restart needed.
-- Chinese text uses a system font, so the UI is legible on any modern Windows
-  without bundling a large font file.
+- Chinese text uses a system font (Microsoft YaHei on Windows, PingFang on macOS),
+  so the UI is legible without bundling a large font file.
 
 ## Quick start
 
-Download `guardian-vX.Y.Z-windows-x86_64.zip` (e.g. `guardian-v0.3.1-windows-x86_64.zip`) from
-[Releases](https://github.com/Michael-py001/guardian/releases), extract it and
-run `guardian.exe`. A window appears — no console, no setup.
+Download the archive for your platform from
+[Releases](https://github.com/Michael-py001/guardian/releases) and extract it:
+
+- Windows: `guardian-vX.Y.Z-windows-x86_64.zip` → run `guardian.exe`.
+- macOS: `guardian-vX.Y.Z-macos-aarch64-apple-darwin.zip` (Apple Silicon) or
+  `guardian-vX.Y.Z-macos-x86_64-apple-darwin.zip` (Intel) → run `./guardian`.
+  macOS may ask you to allow the binary in System Settings → Privacy & Security.
+
+A window appears — no console, no setup. On macOS, **adopt from running processes**
+and **logon autostart** are unavailable (Windows-only); everything else works the same.
 
 Click **Add entry**, choose an executable (or a running process), and Guardian
 starts watching it immediately.
@@ -124,13 +131,18 @@ MIT — see [LICENSE](LICENSE).
 - 开机自启开关（Windows 计划任务，运行在桌面会话）。
 - 指数退避：1s → 2s → 4s … 封顶 30s，健康运行后重置。
 - 配置热重载：手改 `guardian.toml` 后 1 秒内自动生效，无需重启。
-- 中文使用系统字体渲染，任何现代 Windows 都清晰，无需内置大字体文件。
+- 中文使用系统字体渲染（Windows 微软雅黑、macOS 苹方），无需内置大字体文件。
 
 ### 快速开始
 
-从 [Releases](https://github.com/Michael-py001/guardian/releases) 下载
-`guardian-vX.Y.Z-windows-x86_64.zip`（如 `guardian-v0.3.1-windows-x86_64.zip`），解压后运行 `guardian.exe`。直接出现窗口——
-没有控制台，无需安装。
+从 [Releases](https://github.com/Michael-py001/guardian/releases) 下载对应平台的压缩包并解压：
+
+- Windows：`guardian-vX.Y.Z-windows-x86_64.zip` → 运行 `guardian.exe`。
+- macOS：Apple Silicon 下载 `guardian-vX.Y.Z-macos-aarch64-apple-darwin.zip`，Intel 下载
+  `guardian-vX.Y.Z-macos-x86_64-apple-darwin.zip` → 运行 `./guardian`。
+  macOS 可能要求在「系统设置 → 隐私与安全性」中允许该程序。
+
+直接出现窗口——没有控制台，无需安装。macOS 上**从运行进程接管**和**开机自启**不可用（仅 Windows 支持），其余功能一致。
 
 点 **Add entry**，选一个可执行文件（或运行中的进程），Guardian 立即开始守护。
 
