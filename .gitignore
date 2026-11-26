@@ -3,3 +3,5 @@
 /.taste-skill
 guardian.toml
 *.log
+__pycache__/
+*.pyc

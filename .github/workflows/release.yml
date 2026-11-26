@@ -14,7 +14,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # changelog generator needs all tags and history
       - uses: dtolnay/rust-toolchain@stable
+      - name: Generate changelog
+        run: python scripts/generate_changelog.py
       - name: Build
         run: cargo build --release
       - name: Test
@@ -25,6 +29,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/guardian.exe dist/
           Copy-Item README.md dist/
+          Copy-Item CHANGELOG.md dist/
           Copy-Item LICENSE dist/
           Copy-Item config.example.toml dist/
           # No default guardian.toml: the GUI starts empty; users add entries there.
@@ -46,6 +51,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # changelog generator needs all tags and history
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -57,7 +64,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/guardian dist/
-          cp README.md LICENSE config.example.toml dist/
+          cp README.md CHANGELOG.md LICENSE config.example.toml dist/
           zip -j "guardian-${GITHUB_REF_NAME}-macos-${{ matrix.target }}.zip" dist/*
       - name: Upload Release asset
         uses: softprops/action-gh-release@v2

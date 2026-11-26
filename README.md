@@ -70,6 +70,12 @@ The exe's version resource is filled from `Cargo.toml`
 (`assets/guardian.rc` plus `build.rs`), so it shows in Properties › Details and
 never drifts from the crate version.
 
+`CHANGELOG.md` is generated from git tags and Conventional Commits; releases do
+it automatically. To regenerate locally: `python scripts/generate_changelog.py`,
+which also prints the suggested next version (`feat` → minor, `fix`/`perf` → patch,
+`!` → major). Use `python scripts/generate_changelog.py --next-version` to print
+just that version, or `--bump` to write it into `Cargo.toml`.
+
 ## Where files live
 
 Guardian is a portable app: its config, log and crash history sit **next to the
@@ -157,6 +163,11 @@ powershell -File build-release.ps1
 
 exe 的版本资源由 `Cargo.toml` 自动填充（`assets/guardian.rc` + `build.rs`），
 在「属性 → 详细信息」里能看到，且不会和 crate 版本号脱节。
+
+`CHANGELOG.md` 由 git tag 和 Conventional Commits 自动生成，发版时自动更新；
+本地重新生成：`python scripts/generate_changelog.py`，同时会打印建议的下一个版本
+（`feat` → 次版本、`fix`/`perf` → 补丁、`!` → 主版本）。只需版本号时用
+`python scripts/generate_changelog.py --next-version`，用 `--bump` 写回 `Cargo.toml`。
 
 ### 文件位置
 
