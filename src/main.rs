@@ -1582,6 +1582,9 @@ fn main() -> eframe::Result<()> {
     let st = load_settings();
     let title = strings(st.lang).app_title;
     let options = eframe::NativeOptions {
+        // Position the window on the primary monitor before it is created.
+        // Windows otherwise drops a frameless window on a secondary screen.
+        centered: true,
         // Logical points; keep it DPI-safe so all columns fit at 150% scaling.
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([880.0, 620.0])

@@ -679,9 +679,20 @@ impl Watcher {
 
 // ---------------- Autostart (Windows scheduled task) ----------------
 
+/// A `schtasks.exe` command that never pops a console window. Without
+/// `CREATE_NO_WINDOW` each status check flashes a terminal on startup.
+#[cfg(windows)]
+fn schtasks() -> Command {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    let mut cmd = Command::new("schtasks.exe");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 #[cfg(windows)]
 pub fn task_installed() -> bool {
-    Command::new("schtasks.exe")
+    schtasks()
         .args(["/Query", "/TN", TASK_NAME])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -696,7 +707,7 @@ pub fn task_installed() -> bool { false }
 #[cfg(windows)]
 pub fn install_task(exe: &Path, config: &Path) -> Result<()> {
     let task_run = format!("\"{}\" \"{}\"", exe.display(), config.display());
-    let status = Command::new("schtasks.exe")
+    let status = schtasks()
         .args(["/Create", "/TN", TASK_NAME, "/TR", &task_run, "/SC", "ONLOGON", "/F"])
         .status()
         .context("failed to run schtasks.exe")?;
@@ -708,7 +719,7 @@ pub fn install_task(exe: &Path, config: &Path) -> Result<()> {
 
 #[cfg(windows)]
 pub fn uninstall_task() -> Result<()> {
-    let status = Command::new("schtasks.exe")
+    let status = schtasks()
         .args(["/Delete", "/TN", TASK_NAME, "/F"])
         .status()
         .context("failed to run schtasks.exe")?;
