@@ -6,6 +6,7 @@ All notable changes to Guardian.
 
 ### Features
 
+- **changelog:** generate from tags and conventional commits (`87b42ab`)
 - **mac:** build and release macOS binaries (`5ae1ac4`)
 
 ## 0.3.2 - 2026-11-26
